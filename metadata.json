@@ -1,0 +1,6 @@
+{
+  "name": "WatermarkPro - Batch Watermark & WebP Studio",
+  "description": "Production-ready batch image watermarking SaaS with multi-business branding, customizable watermarks, live preview, WebP conversion, ZIP download, and re-processing workflow.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
