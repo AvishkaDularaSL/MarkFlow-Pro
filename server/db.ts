@@ -2,7 +2,10 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
+import dotenv from 'dotenv';
 import mysql, { Pool } from 'mysql2/promise';
+
+dotenv.config();
 import {
   User,
   Business,
