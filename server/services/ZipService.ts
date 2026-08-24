@@ -1,7 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import * as archiverModule from 'archiver';
-const archiver = ((archiverModule as any).default || archiverModule) as any;
+import JSZip from 'jszip';
 import { StorageService } from './StorageService';
 import { ProcessedImage } from '../types';
 
@@ -19,34 +18,39 @@ export class ZipService {
     const zipFilename = `${safeBizName}_Watermarked_${dateStr}_${jobId.substring(4, 10)}.zip`;
     const zipPath = path.join(StorageService.ZIPS_DIR, zipFilename);
 
-    return new Promise((resolve, reject) => {
-      const output = fs.createWriteStream(zipPath);
-      const archive = archiver('zip', {
-        zlib: { level: 6 }, // standard compression
-      });
+    const zip = new JSZip();
+    const usedNames = new Map<string, number>();
 
-      output.on('close', () => {
-        resolve({ zipPath, zipFilename });
-      });
+    // Append each processed file into the ZIP archive with deduplicated names if needed
+    for (const img of processedImages) {
+      if (fs.existsSync(img.output_path)) {
+        const fileData = fs.readFileSync(img.output_path);
+        let entryName = img.output_filename || 'image.png';
 
-      output.on('error', (err) => {
-        reject(err);
-      });
-
-      archive.on('error', (err) => {
-        reject(err);
-      });
-
-      archive.pipe(output);
-
-      // Append each processed file
-      for (const img of processedImages) {
-        if (fs.existsSync(img.output_path)) {
-          archive.file(img.output_path, { name: img.output_filename });
+        if (usedNames.has(entryName)) {
+          const count = usedNames.get(entryName)! + 1;
+          usedNames.set(entryName, count);
+          const parsed = path.parse(entryName);
+          entryName = `${parsed.name} (${count})${parsed.ext}`;
+        } else {
+          usedNames.set(entryName, 0);
         }
-      }
 
-      archive.finalize();
+        zip.file(entryName, fileData, {
+          date: new Date(),
+        });
+      }
+    }
+
+    const zipBuffer = await zip.generateAsync({
+      type: 'nodebuffer',
+      compression: 'DEFLATE',
+      compressionOptions: { level: 6 },
+      platform: 'DOS',
     });
+
+    fs.writeFileSync(zipPath, zipBuffer);
+
+    return { zipPath, zipFilename };
   }
 }

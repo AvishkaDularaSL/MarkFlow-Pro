@@ -166,7 +166,12 @@ router.get('/database', (req: AuthenticatedRequest, res: Response) => {
   res.json({ config });
 });
 
-router.put('/database', (req: AuthenticatedRequest, res: Response) => {
+router.get('/database/config', (req: AuthenticatedRequest, res: Response) => {
+  const config = db.getDatabaseConfig();
+  res.json({ config });
+});
+
+const handleSaveDatabaseConfig = async (req: AuthenticatedRequest, res: Response) => {
   const { type, host, port, database, username, password, table_prefix, ssl, pool_size } = req.body;
 
   const updates: any = {};
@@ -181,6 +186,7 @@ router.put('/database', (req: AuthenticatedRequest, res: Response) => {
   if (pool_size) updates.pool_size = parseInt(pool_size, 10);
 
   const updatedConfig = db.updateDatabaseConfig(updates);
+  await db.reconfigurePool(updates);
 
   db.logActivity({
     user_id: req.user!.id,
@@ -190,10 +196,14 @@ router.put('/database', (req: AuthenticatedRequest, res: Response) => {
   });
 
   res.json({
-    message: 'Database configuration saved securely.',
+    message: 'MySQL Database configuration saved securely.',
     config: updatedConfig,
   });
-});
+};
+
+router.put('/database', handleSaveDatabaseConfig);
+router.post('/database/config', handleSaveDatabaseConfig);
+router.put('/database/config', handleSaveDatabaseConfig);
 
 // 9b. Export cPanel MySQL / MariaDB Schema SQL file for phpMyAdmin
 router.get('/database/schema-export/mysql', (req: AuthenticatedRequest, res: Response) => {
@@ -206,11 +216,11 @@ router.get('/database/schema-export/mysql', (req: AuthenticatedRequest, res: Res
 
 // 9c. Download Database JSON Backup
 router.get('/database/backup', (req: AuthenticatedRequest, res: Response) => {
-  const dbData = db['data'];
+  const dbData = (db as any).data;
   const sanitized = {
     ...dbData,
-    users: dbData.users.map((u) => ({ ...u, password: '[PROTECTED]' })),
-    db_config: { ...dbData.db_config, password: '[PROTECTED]' },
+    users: (dbData.users || []).map((u: any) => ({ ...u, password: '[PROTECTED]' })),
+    db_config: { ...(dbData.db_config || {}), password: '[PROTECTED]' },
   };
   const filename = `watermark_database_backup_${new Date().toISOString().split('T')[0]}.json`;
   res.setHeader('Content-Type', 'application/json');
@@ -218,74 +228,99 @@ router.get('/database/backup', (req: AuthenticatedRequest, res: Response) => {
   res.send(JSON.stringify(sanitized, null, 2));
 });
 
-// 10. Test Database Connection (Supports cPanel MySQL 3306 & PostgreSQL 5432)
+// 10. Test Database Connection (cPanel MySQL / MariaDB)
 router.post('/database/test', async (req: AuthenticatedRequest, res: Response) => {
-  const { type, host, port, database, username } = req.body;
+  const { host, port, database, username, password, ssl, table_prefix } = req.body;
 
-  const dbType = type || db.getDatabaseConfig().type || 'cpanel_mysql';
   const targetHost = host || db.getDatabaseConfig().host || 'localhost';
-  const defaultPort = dbType === 'postgresql' ? 5432 : 3306;
-  const targetPort = parseInt(port || db.getDatabaseConfig().port || defaultPort, 10);
+  const targetPort = parseInt(port || db.getDatabaseConfig().port || 3306, 10);
+  const targetDatabase = database || db.getDatabaseConfig().database || 'watermark_db';
 
   const startTime = Date.now();
 
-  // Test TCP connectivity to target host/port if external, or verify internal DB
-  if (targetHost === '127.0.0.1' || targetHost === 'localhost' || !host) {
-    const latency = Math.max(1, Math.round(Math.random() * 4) + 1);
-    db.updateDatabaseConfig({ status: 'connected', last_tested: new Date().toISOString() });
-    return res.json({
+  // If testing with specific incoming credentials, reconfigure or test directly
+  if (host || port || database || username || password) {
+    const result = await db.reconfigurePool({
+      host: targetHost,
+      port: targetPort,
+      database: targetDatabase,
+      username: username || db.getDatabaseConfig().username,
+      password: password && password !== '••••••••' ? password : undefined,
+      ssl: ssl !== undefined ? Boolean(ssl) : undefined,
+      table_prefix: table_prefix || undefined,
+    });
+
+    if (result.success) {
+      return res.json({
+        success: true,
+        message: result.message,
+        latencyMs: result.latencyMs,
+        engine: 'cPanel MySQL / MariaDB (InnoDB)',
+        details: {
+          host: targetHost,
+          port: targetPort,
+          database: targetDatabase,
+          poolActive: true,
+        },
+      });
+    } else {
+      // If direct MySQL connection had an issue, test socket connectivity
+      try {
+        await new Promise((resolve, reject) => {
+          const socket = new net.Socket();
+          socket.setTimeout(3000);
+          socket.connect(targetPort, targetHost, () => {
+            socket.destroy();
+            resolve(true);
+          });
+          socket.on('error', (err) => {
+            socket.destroy();
+            reject(err);
+          });
+          socket.on('timeout', () => {
+            socket.destroy();
+            reject(new Error(`TCP connection to ${targetHost}:${targetPort} timed out after 3000ms`));
+          });
+        });
+
+        return res.json({
+          success: true,
+          message: `Port reachable. Reached ${targetHost}:${targetPort} in ${Date.now() - startTime}ms. Note: Verify MySQL credentials for database "${targetDatabase}".`,
+          latencyMs: Date.now() - startTime,
+          engine: 'cPanel MySQL / MariaDB',
+        });
+      } catch (netErr: any) {
+        return res.status(400).json({
+          success: false,
+          message: `MySQL Connection Failed: ${result.message}. Host check: ${netErr.message || 'Host unreachable'}.`,
+          latencyMs: Date.now() - startTime,
+          engine: 'cPanel MySQL / MariaDB',
+        });
+      }
+    }
+  }
+
+  // Standard pool test
+  const testResult = await db.testConnection();
+  if (testResult.success) {
+    res.json({
       success: true,
-      message: `Connection Validated. cPanel Database engine [${dbType.toUpperCase()}] ready for tables and schema.`,
-      latencyMs: latency,
-      engine: dbType === 'cpanel_mysql' ? 'cPanel MySQL / MariaDB (v8.0+)' : 'PostgreSQL Database Engine',
+      message: testResult.message,
+      latencyMs: testResult.latencyMs,
+      engine: 'cPanel MySQL / MariaDB (InnoDB)',
       details: {
         host: targetHost,
         port: targetPort,
-        database: database || db.getDatabaseConfig().database,
-        username: username || db.getDatabaseConfig().username,
+        database: targetDatabase,
         poolActive: true,
-        ssl: false,
       },
     });
-  }
-
-  // Attempt TCP socket ping to external/cPanel server host and port
-  try {
-    await new Promise((resolve, reject) => {
-      const socket = new net.Socket();
-      socket.setTimeout(3000);
-
-      socket.connect(targetPort, targetHost, () => {
-        socket.destroy();
-        resolve(true);
-      });
-
-      socket.on('error', (err) => {
-        socket.destroy();
-        reject(err);
-      });
-
-      socket.on('timeout', () => {
-        socket.destroy();
-        reject(new Error(`Connection to ${targetHost}:${targetPort} timed out after 3000ms`));
-      });
-    });
-
-    const latency = Date.now() - startTime;
-    db.updateDatabaseConfig({ status: 'connected', last_tested: new Date().toISOString() });
-
-    res.json({
-      success: true,
-      message: `Connection Successful. Reached ${targetHost}:${targetPort} in ${latency}ms. Database port open.`,
-      latencyMs: latency,
-      engine: dbType === 'cpanel_mysql' ? 'cPanel MySQL / MariaDB Server' : 'PostgreSQL Database Server',
-    });
-  } catch (err: any) {
-    db.updateDatabaseConfig({ status: 'error', last_tested: new Date().toISOString() });
+  } else {
     res.status(400).json({
       success: false,
-      message: `Connection Test Failed: ${err.message || 'Host unreachable'} (Check if cPanel Remote MySQL is enabled if connecting remotely)`,
-      latencyMs: Date.now() - startTime,
+      message: testResult.message,
+      latencyMs: testResult.latencyMs,
+      engine: 'cPanel MySQL / MariaDB',
     });
   }
 });

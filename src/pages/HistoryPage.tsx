@@ -113,8 +113,8 @@ export const HistoryPage: React.FC<HistoryPageProps> = ({ onNavigate }) => {
                           <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] border border-slate-200 font-medium">
                             Op: {job.opacity}%
                           </span>
-                          <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] border border-emerald-200 font-bold font-mono">
-                            WebP Q:{job.quality}%
+                          <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] border border-emerald-200 font-bold font-mono uppercase">
+                            {(job.output_format || 'webp')} Q:{job.quality}%
                           </span>
                         </div>
                       </td>

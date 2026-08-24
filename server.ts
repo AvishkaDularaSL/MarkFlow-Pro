@@ -2,6 +2,7 @@ import express from 'express';
 import path from 'path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
+import { db } from './server/db';
 import authRoutes from './server/routes/auth';
 import businessRoutes from './server/routes/businesses';
 import processRoutes from './server/routes/process';
@@ -26,13 +27,40 @@ async function startServer() {
     next();
   });
 
-  // API Routes
-  app.get('/api/health', (req, res) => {
+  // API Health & Database Diagnostic Routes
+  app.get('/api/health', async (req, res) => {
+    const dbTest = await db.testConnection();
     res.json({
       status: 'ok',
-      service: 'WatermarkPro SaaS Engine',
+      service: 'MarkFlow Pro SaaS Engine',
+      database: {
+        engine: 'MySQL / MariaDB',
+        connected: dbTest.success,
+        host: dbTest.host,
+        port: dbTest.port,
+        name: dbTest.database,
+        latencyMs: dbTest.latencyMs,
+        message: dbTest.message,
+      },
       timestamp: new Date().toISOString(),
     });
+  });
+
+  app.get('/api/health/db', async (req, res) => {
+    const dbTest = await db.testConnection();
+    if (dbTest.success) {
+      res.json({
+        status: 'connected',
+        ...dbTest,
+        timestamp: new Date().toISOString(),
+      });
+    } else {
+      res.status(503).json({
+        status: 'disconnected',
+        ...dbTest,
+        timestamp: new Date().toISOString(),
+      });
+    }
   });
 
   app.use('/api/auth', authRoutes);

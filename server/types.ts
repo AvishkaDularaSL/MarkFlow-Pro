@@ -58,16 +58,16 @@ export type WatermarkPosition =
 
 export type WatermarkBgMode = 'transparent' | 'white-card';
 
-export type OutputFormat = 'webp' | 'png' | 'jpeg' | 'avif';
+export type OutputFormat = 'original' | 'png' | 'jpeg' | 'webp' | 'avif';
 
 export interface WatermarkConfig {
   position: WatermarkPosition;
-  logo_size: number; // percentage, e.g. 20 (20%)
+  logo_size: number; // percentage, e.g. 50 (50% default)
   opacity: number; // percentage, e.g. 50 (50%)
   margin: number; // pixels, e.g. 20
   rotation: number; // degrees, e.g. 0 (-180 to 180)
   bg_mode?: WatermarkBgMode;
-  output_format?: OutputFormat; // 'webp' | 'png' | 'jpeg' | 'avif'
+  output_format?: OutputFormat; // 'original' | 'png' | 'jpeg' | 'webp' | 'avif'
   quality?: number; // 1 to 100, default 80
   webp_quality?: number; // legacy alias
 }

@@ -173,8 +173,8 @@ export class ImageProcessingService {
     const origWidth = baseMeta.width || 1200;
     const origHeight = baseMeta.height || 800;
 
-    // 2. Compute target logo width based on user percentage
-    const sizePercentage = Math.max(5, Math.min(100, config.logo_size || 20));
+    // 2. Compute target logo width based on user percentage (default 50%)
+    const sizePercentage = Math.max(5, Math.min(100, config.logo_size ?? 50));
     const targetLogoWidth = Math.round((origWidth * sizePercentage) / 100);
 
     // 3. Prepare watermark overlay
@@ -198,11 +198,22 @@ export class ImageProcessingService {
     );
 
     // 5. Composite and convert to chosen Output Format
-    const outputFormat = config.output_format || 'webp';
-    const effectiveQuality = Math.max(1, Math.min(100, Math.round(config.quality || config.webp_quality || 80)));
+    let outputFormat = config.output_format || 'original';
+    if (outputFormat === 'original') {
+      const ext = (outputFilename.split('.').pop() || '').toLowerCase();
+      const metaFmt = (baseMeta.format as string || '').toLowerCase();
+      if (ext === 'png' || metaFmt === 'png') outputFormat = 'png';
+      else if (ext === 'jpg' || ext === 'jpeg' || metaFmt === 'jpeg' || metaFmt === 'jpg') outputFormat = 'jpeg';
+      else if (ext === 'webp' || metaFmt === 'webp') outputFormat = 'webp';
+      else if (ext === 'avif' || metaFmt === 'avif' || metaFmt === 'heif') outputFormat = 'avif';
+      else outputFormat = 'png';
+    }
+
+    const effectiveQuality = Math.max(1, Math.min(100, Math.round(config.quality || config.webp_quality || 85)));
 
     let pipeline = sharp(originalImagePath)
       .rotate()
+      .toColorspace('srgb')
       .composite([
         {
           input: preparedLogo.buffer,
@@ -214,24 +225,28 @@ export class ImageProcessingService {
     if (outputFormat === 'png') {
       pipeline = pipeline.png({
         quality: effectiveQuality,
-        compressionLevel: 8,
+        compressionLevel: 7,
         adaptiveFiltering: true,
+        force: true,
       });
     } else if (outputFormat === 'jpeg') {
-      pipeline = pipeline.jpeg({
+      pipeline = pipeline.flatten({ background: { r: 255, g: 255, b: 255 } }).jpeg({
         quality: effectiveQuality,
         mozjpeg: true,
+        force: true,
       });
     } else if (outputFormat === 'avif') {
       pipeline = pipeline.avif({
         quality: effectiveQuality,
         effort: 4,
+        force: true,
       });
     } else {
-      // Default: WebP
+      // WebP
       pipeline = pipeline.webp({
         quality: effectiveQuality,
         effort: 4,
+        force: true,
       });
     }
 
@@ -292,7 +307,7 @@ export class ImageProcessingService {
       .jpeg({ quality: 85 })
       .toBuffer();
 
-    const sizePercentage = Math.max(5, Math.min(100, config.logo_size || 20));
+    const sizePercentage = Math.max(5, Math.min(100, config.logo_size ?? 50));
     const targetLogoWidth = Math.round((previewW * sizePercentage) / 100);
 
     const preparedLogo = await this.prepareLogoBuffer(
@@ -313,29 +328,40 @@ export class ImageProcessingService {
       scaledMargin
     );
 
-    const outputFormat = config.output_format || 'webp';
-    const effectiveQuality = Math.max(1, Math.min(100, Math.round(config.quality || config.webp_quality || 80)));
+    let outputFormat = config.output_format || 'original';
+    if (outputFormat === 'original') {
+      const origFmt = (origMeta.format as string || '').toLowerCase();
+      if (origFmt === 'png') outputFormat = 'png';
+      else if (origFmt === 'jpeg' || origFmt === 'jpg') outputFormat = 'jpeg';
+      else if (origFmt === 'webp') outputFormat = 'webp';
+      else if (origFmt === 'avif' || origFmt === 'heif') outputFormat = 'avif';
+      else outputFormat = 'png';
+    }
 
-    let previewPipeline = sharp(scaledBaseBuffer).composite([
-      {
-        input: preparedLogo.buffer,
-        left: coords.left,
-        top: coords.top,
-      },
-    ]);
+    const effectiveQuality = Math.max(1, Math.min(100, Math.round(config.quality || config.webp_quality || 85)));
+
+    let previewPipeline = sharp(scaledBaseBuffer)
+      .toColorspace('srgb')
+      .composite([
+        {
+          input: preparedLogo.buffer,
+          left: coords.left,
+          top: coords.top,
+        },
+      ]);
 
     let mimeType = 'image/webp';
     if (outputFormat === 'png') {
-      previewPipeline = previewPipeline.png({ quality: effectiveQuality });
+      previewPipeline = previewPipeline.png({ quality: effectiveQuality, force: true });
       mimeType = 'image/png';
     } else if (outputFormat === 'jpeg') {
-      previewPipeline = previewPipeline.jpeg({ quality: effectiveQuality, mozjpeg: true });
+      previewPipeline = previewPipeline.flatten({ background: { r: 255, g: 255, b: 255 } }).jpeg({ quality: effectiveQuality, mozjpeg: true, force: true });
       mimeType = 'image/jpeg';
     } else if (outputFormat === 'avif') {
-      previewPipeline = previewPipeline.avif({ quality: effectiveQuality, effort: 2 });
+      previewPipeline = previewPipeline.avif({ quality: effectiveQuality, effort: 2, force: true });
       mimeType = 'image/avif';
     } else {
-      previewPipeline = previewPipeline.webp({ quality: effectiveQuality });
+      previewPipeline = previewPipeline.webp({ quality: effectiveQuality, force: true });
       mimeType = 'image/webp';
     }
 

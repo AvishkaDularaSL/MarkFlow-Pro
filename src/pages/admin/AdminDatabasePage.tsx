@@ -138,92 +138,139 @@ SET time_zone = "+00:00";
 
 -- 1. Users Table
 CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}users\` (
-  \`id\` VARCHAR(36) NOT NULL PRIMARY KEY,
-  \`name\` VARCHAR(255) NOT NULL,
-  \`email\` VARCHAR(255) NOT NULL UNIQUE,
+  \`id\` VARCHAR(64) NOT NULL,
+  \`name\` VARCHAR(128) NOT NULL,
+  \`email\` VARCHAR(191) NOT NULL,
   \`password\` VARCHAR(255) NOT NULL,
   \`role\` ENUM('admin', 'user') NOT NULL DEFAULT 'user',
   \`status\` ENUM('active', 'deactivated') NOT NULL DEFAULT 'active',
-  \`created_at\` DATETIME NOT NULL,
-  \`updated_at\` DATETIME NOT NULL,
-  INDEX \`idx_users_email\` (\`email\`),
-  INDEX \`idx_users_role\` (\`role\`)
+  \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (\`id\`),
+  UNIQUE KEY \`uniq_user_email\` (\`email\`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 2. Business Profiles Table
 CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}businesses\` (
-  \`id\` VARCHAR(36) NOT NULL PRIMARY KEY,
-  \`user_id\` VARCHAR(36) NOT NULL,
-  \`name\` VARCHAR(255) NOT NULL,
-  \`description\` TEXT,
-  \`logo_filename\` VARCHAR(255) NOT NULL,
-  \`logo_original_name\` VARCHAR(255) NOT NULL,
-  \`logo_mimetype\` VARCHAR(100) NOT NULL,
-  \`logo_size\` INT UNSIGNED NOT NULL,
-  \`created_at\` DATETIME NOT NULL,
-  \`updated_at\` DATETIME NOT NULL,
-  INDEX \`idx_biz_user\` (\`user_id\`),
-  CONSTRAINT \`fk_biz_user\` FOREIGN KEY (\`user_id\`) REFERENCES \`${dbConfig.table_prefix || 'wm_'}users\` (\`id\`) ON DELETE CASCADE
+  \`id\` VARCHAR(64) NOT NULL,
+  \`user_id\` VARCHAR(64) NOT NULL,
+  \`name\` VARCHAR(128) NOT NULL,
+  \`description\` TEXT DEFAULT NULL,
+  \`logo_path\` VARCHAR(255) NOT NULL,
+  \`logo_original_name\` VARCHAR(191) NOT NULL,
+  \`logo_mime\` VARCHAR(64) NOT NULL DEFAULT 'image/png',
+  \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (\`id\`),
+  KEY \`idx_biz_user\` (\`user_id\`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 -- 3. Processing Sessions
-CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}sessions\` (
-  \`id\` VARCHAR(36) NOT NULL PRIMARY KEY,
-  \`user_id\` VARCHAR(36) NOT NULL,
-  \`created_at\` DATETIME NOT NULL,
+CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}processing_sessions\` (
+  \`id\` VARCHAR(64) NOT NULL,
+  \`user_id\` VARCHAR(64) NOT NULL,
+  \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   \`expires_at\` DATETIME NOT NULL,
-  INDEX \`idx_sessions_user\` (\`user_id\`),
-  CONSTRAINT \`fk_sess_user\` FOREIGN KEY (\`user_id\`) REFERENCES \`${dbConfig.table_prefix || 'wm_'}users\` (\`id\`) ON DELETE CASCADE
+  PRIMARY KEY (\`id\`),
+  KEY \`idx_sess_user\` (\`user_id\`),
+  KEY \`idx_sess_expires\` (\`expires_at\`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 4. Processing Jobs (Batch History)
-CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}jobs\` (
-  \`id\` VARCHAR(36) NOT NULL PRIMARY KEY,
-  \`user_id\` VARCHAR(36) NOT NULL,
-  \`business_id\` VARCHAR(36) NOT NULL,
-  \`business_name\` VARCHAR(255) NOT NULL,
-  \`total_images\` INT UNSIGNED NOT NULL DEFAULT 0,
-  \`completed_images\` INT UNSIGNED NOT NULL DEFAULT 0,
-  \`output_format\` VARCHAR(20) NOT NULL DEFAULT 'webp',
-  \`position\` VARCHAR(50) NOT NULL,
-  \`logo_size\` INT UNSIGNED NOT NULL,
-  \`opacity\` INT UNSIGNED NOT NULL,
-  \`quality\` INT UNSIGNED NOT NULL,
-  \`zip_path\` VARCHAR(255),
-  \`zip_ready\` TINYINT(1) NOT NULL DEFAULT 0,
-  \`created_at\` DATETIME NOT NULL,
-  \`expires_at\` DATETIME NOT NULL,
-  INDEX \`idx_jobs_user\` (\`user_id\`),
-  INDEX \`idx_jobs_business\` (\`business_id\`)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
--- 5. Processed Images
-CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}processed_images\` (
-  \`id\` VARCHAR(36) NOT NULL PRIMARY KEY,
-  \`job_id\` VARCHAR(36) NOT NULL,
+-- 4. Uploaded Images
+CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}uploaded_images\` (
+  \`id\` VARCHAR(64) NOT NULL,
+  \`processing_session_id\` VARCHAR(64) NOT NULL,
+  \`user_id\` VARCHAR(64) NOT NULL,
   \`original_name\` VARCHAR(255) NOT NULL,
-  \`output_filename\` VARCHAR(255) NOT NULL,
-  \`output_format\` VARCHAR(20) NOT NULL DEFAULT 'webp',
-  \`file_size\` INT UNSIGNED NOT NULL,
-  \`original_file_size\` INT UNSIGNED NOT NULL DEFAULT 0,
-  \`width\` INT UNSIGNED NOT NULL,
-  \`height\` INT UNSIGNED NOT NULL,
-  \`created_at\` DATETIME NOT NULL,
-  INDEX \`idx_proc_job\` (\`job_id\`),
-  CONSTRAINT \`fk_proc_job\` FOREIGN KEY (\`job_id\`) REFERENCES \`${dbConfig.table_prefix || 'wm_'}jobs\` (\`id\`) ON DELETE CASCADE
+  \`temporary_path\` VARCHAR(255) NOT NULL,
+  \`mime_type\` VARCHAR(64) NOT NULL,
+  \`file_size\` BIGINT(20) NOT NULL,
+  \`width\` INT(11) DEFAULT NULL,
+  \`height\` INT(11) DEFAULT NULL,
+  \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (\`id\`),
+  KEY \`idx_img_session\` (\`processing_session_id\`),
+  KEY \`idx_img_user\` (\`user_id\`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
--- 6. Audit & Activity Logs
-CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}audit_logs\` (
-  \`id\` VARCHAR(36) NOT NULL PRIMARY KEY,
-  \`user_id\` VARCHAR(36),
-  \`user_email\` VARCHAR(255),
-  \`action\` VARCHAR(100) NOT NULL,
-  \`metadata_json\` LONGTEXT,
-  \`created_at\` DATETIME NOT NULL,
-  INDEX \`idx_audit_action\` (\`action\`),
-  INDEX \`idx_audit_created\` (\`created_at\`)
+-- 5. Processing Jobs (Batch History)
+CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}processing_jobs\` (
+  \`id\` VARCHAR(64) NOT NULL,
+  \`user_id\` VARCHAR(64) NOT NULL,
+  \`processing_session_id\` VARCHAR(64) NOT NULL,
+  \`business_id\` VARCHAR(64) NOT NULL,
+  \`business_name\` VARCHAR(128) NOT NULL,
+  \`output_format\` VARCHAR(16) NOT NULL DEFAULT 'webp',
+  \`quality\` INT(11) NOT NULL DEFAULT 80,
+  \`opacity\` INT(11) NOT NULL DEFAULT 50,
+  \`position\` VARCHAR(32) NOT NULL DEFAULT 'center',
+  \`logo_size\` INT(11) NOT NULL DEFAULT 50,
+  \`margin\` INT(11) NOT NULL DEFAULT 20,
+  \`rotation\` INT(11) NOT NULL DEFAULT 0,
+  \`status\` ENUM('pending', 'processing', 'completed', 'failed') NOT NULL DEFAULT 'pending',
+  \`total_images\` INT(11) NOT NULL DEFAULT 0,
+  \`completed_images\` INT(11) NOT NULL DEFAULT 0,
+  \`failed_images\` INT(11) NOT NULL DEFAULT 0,
+  \`error_message\` TEXT DEFAULT NULL,
+  \`zip_path\` VARCHAR(255) DEFAULT NULL,
+  \`zip_filename\` VARCHAR(191) DEFAULT NULL,
+  \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  \`completed_at\` DATETIME DEFAULT NULL,
+  \`expires_at\` DATETIME NOT NULL,
+  PRIMARY KEY (\`id\`),
+  KEY \`idx_job_user\` (\`user_id\`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 6. Processed Images
+CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}processed_images\` (
+  \`id\` VARCHAR(64) NOT NULL,
+  \`processing_job_id\` VARCHAR(64) NOT NULL,
+  \`original_image_id\` VARCHAR(64) NOT NULL,
+  \`user_id\` VARCHAR(64) NOT NULL,
+  \`original_filename\` VARCHAR(255) NOT NULL,
+  \`output_path\` VARCHAR(255) NOT NULL,
+  \`output_filename\` VARCHAR(255) NOT NULL,
+  \`output_format\` VARCHAR(16) NOT NULL DEFAULT 'webp',
+  \`file_size\` BIGINT(20) NOT NULL,
+  \`original_file_size\` BIGINT(20) DEFAULT NULL,
+  \`width\` INT(11) NOT NULL,
+  \`height\` INT(11) NOT NULL,
+  \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  \`expires_at\` DATETIME NOT NULL,
+  PRIMARY KEY (\`id\`),
+  KEY \`idx_proc_job\` (\`processing_job_id\`),
+  KEY \`idx_proc_user\` (\`user_id\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 7. System Settings
+CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}system_settings\` (
+  \`id\` VARCHAR(64) NOT NULL,
+  \`key\` VARCHAR(64) NOT NULL,
+  \`value\` TEXT NOT NULL,
+  \`description\` VARCHAR(255) DEFAULT NULL,
+  \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (\`id\`),
+  UNIQUE KEY \`uniq_setting_key\` (\`key\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- 8. Audit & Activity Logs
+CREATE TABLE IF NOT EXISTS \`${dbConfig.table_prefix || 'wm_'}activity_logs\` (
+  \`id\` VARCHAR(64) NOT NULL,
+  \`user_id\` VARCHAR(64) DEFAULT NULL,
+  \`user_email\` VARCHAR(191) DEFAULT NULL,
+  \`action\` VARCHAR(64) NOT NULL,
+  \`metadata\` LONGTEXT DEFAULT NULL,
+  \`ip_address\` VARCHAR(45) DEFAULT NULL,
+  \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (\`id\`),
+  KEY \`idx_activity_user\` (\`user_id\`),
+  KEY \`idx_activity_created\` (\`created_at\`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Seed Default Admin
+INSERT IGNORE INTO \`${dbConfig.table_prefix || 'wm_'}users\` (\`id\`, \`name\`, \`email\`, \`password\`, \`role\`, \`status\`, \`created_at\`, \`updated_at\`)
+VALUES ('user_admin_root', 'System Administrator', 'admin@watermark.io', '$2b$10$w8gZ9YhV5q7d5sJ1z8k8z.4b3c9f2e1a0', 'admin', 'active', NOW(), NOW());
 
 SET FOREIGN_KEY_CHECKS = 1;`;
 

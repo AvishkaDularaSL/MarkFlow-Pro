@@ -11,6 +11,8 @@ import {
 } from '../types';
 import { useToast } from '../context/ToastContext';
 import { ImageDropzone } from '../components/ImageDropzone';
+import { ImageUrlImporter } from '../components/ImageUrlImporter';
+import { UploadSourceModal } from '../components/UploadSourceModal';
 import { PositionGrid } from '../components/PositionGrid';
 import {
   Wand2,
@@ -30,6 +32,9 @@ import {
   Maximize2,
   Clock,
   RotateCw,
+  UploadCloud,
+  Link2,
+  Plus,
 } from 'lucide-react';
 
 interface ProcessImagesPageProps {
@@ -49,18 +54,20 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
   const [businesses, setBusinesses] = useState<Business[]>([]);
   const [selectedBusinessId, setSelectedBusinessId] = useState<string>(preSelectedBusinessId || '');
   const [previewImageId, setPreviewImageId] = useState<string>('');
+  const [uploadMethod, setUploadMethod] = useState<'direct' | 'links'>('direct');
+  const [isUploadModalOpen, setIsUploadModalOpen] = useState<boolean>(false);
 
-  // Watermark settings state
+  // Watermark settings state (Default scale 50%, position center, preserve original name/format)
   const [config, setConfig] = useState<WatermarkConfig>({
-    position: 'bottom-right',
-    logo_size: 20,
-    opacity: 50,
+    position: 'center',
+    logo_size: 50,
+    opacity: 60,
     margin: 20,
     rotation: 0,
     bg_mode: 'transparent',
-    output_format: 'webp',
-    quality: 80,
-    webp_quality: 80,
+    output_format: 'original',
+    quality: 85,
+    webp_quality: 85,
   });
 
   // Live preview state
@@ -223,6 +230,14 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
     }
   };
 
+  // 3b. Handle images imported from URLs
+  const handleImagesImportedFromUrls = (newImages: UploadedImage[], allImages: UploadedImage[]) => {
+    setUploadedImages(allImages);
+    if (!previewImageId && allImages.length > 0) {
+      setPreviewImageId(newImages.length > 0 ? newImages[0].id : allImages[0].id);
+    }
+  };
+
   // 4. Handle remove single image
   const handleRemoveImage = async (imgId: string) => {
     try {
@@ -324,20 +339,59 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
 
   const authToken = localStorage.getItem('watermark_token');
 
+  // Programmatic download handler for single image (preserving exact original file name)
+  const handleDownloadSingleImage = async (proc: ProcessedImage) => {
+    const downloadUrl = `/api/process/download/image/${proc.id}?token=${authToken || ''}`;
+    try {
+      const response = await fetch(downloadUrl);
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        error('Download Failed', errJson.error || 'Failed to download image');
+        return;
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.setAttribute('download', proc.output_filename);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => window.URL.revokeObjectURL(url), 2000);
+    } catch (err: any) {
+      error('Download Failed', err.message || 'Error downloading file');
+    }
+  };
+
   // Programmatic download handler for ZIP file
-  const handleDownloadZip = (jobId: string) => {
+  const handleDownloadZip = async (jobId: string) => {
     if (!jobId) {
       warning('Download Error', 'Job ID is not available.');
       return;
     }
-    info('Downloading ZIP', 'Your batch archive download is starting...');
-    const downloadUrl = `/api/process/download/zip/${jobId}?token=${authToken || ''}`;
-    const link = document.createElement('a');
-    link.href = downloadUrl;
-    link.setAttribute('download', `Watermarked_Images_${jobId}.zip`);
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+    info('Downloading ZIP', 'Preparing your valid batch ZIP archive...');
+    try {
+      const downloadUrl = `/api/process/download/zip/${jobId}?token=${authToken || ''}`;
+      const response = await fetch(downloadUrl);
+      if (!response.ok) {
+        const errJson = await response.json().catch(() => ({}));
+        error('Download Failed', errJson.error || 'Failed to download ZIP archive');
+        return;
+      }
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      const downloadName = lastCompletedJob?.zip_filename || `Watermarked_Batch_${jobId.substring(4, 10)}.zip`;
+      link.setAttribute('download', downloadName);
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(() => window.URL.revokeObjectURL(url), 2000);
+      success('Download Ready', 'Batch ZIP archive downloaded successfully.');
+    } catch (err: any) {
+      error('Download Failed', err.message || 'Error downloading archive');
+    }
   };
 
   return (
@@ -351,7 +405,7 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
               <span>Image Watermark Studio</span>
             </h1>
             <span className="text-xs font-bold px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200 uppercase">
-              Format: {config.output_format || 'webp'}
+              Format: {config.output_format === 'original' ? 'Original (PNG/JPG)' : config.output_format || 'original'}
             </span>
             <span className="text-[11px] font-semibold px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 flex items-center gap-1">
               ⚡ 100% Native Engine (No AI / Pure Sharp)
@@ -388,16 +442,66 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
                 </span>
                 <span>Upload Source Images</span>
               </h2>
-              <span className="text-xs font-semibold text-slate-500">
-                {uploadedImages.length} {uploadedImages.length === 1 ? 'image' : 'images'} loaded
-              </span>
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-semibold text-slate-500">
+                  {uploadedImages.length} {uploadedImages.length === 1 ? 'image' : 'images'} loaded
+                </span>
+                <button
+                  type="button"
+                  id="open-upload-modal-btn"
+                  onClick={() => setIsUploadModalOpen(true)}
+                  className="p-1 rounded-md text-slate-400 hover:text-blue-600 hover:bg-slate-100 transition-colors"
+                  title="Open Upload Source Modal"
+                >
+                  <Maximize2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
-            <ImageDropzone
-              onFilesSelected={handleUploadFiles}
-              isUploading={isUploading}
-              maxFiles={50}
-            />
+            {/* Option 1 vs Option 2 Tabs */}
+            <div className="grid grid-cols-2 p-1 bg-slate-100 rounded-lg text-xs font-bold">
+              <button
+                type="button"
+                id="tab-direct-upload"
+                onClick={() => setUploadMethod('direct')}
+                className={`flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-md transition-all ${
+                  uploadMethod === 'direct'
+                    ? 'bg-white text-blue-600 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <UploadCloud className="w-3.5 h-3.5" />
+                <span>Option 1: Direct Upload</span>
+              </button>
+
+              <button
+                type="button"
+                id="tab-image-links"
+                onClick={() => setUploadMethod('links')}
+                className={`flex items-center justify-center gap-1.5 py-1.5 px-2.5 rounded-md transition-all ${
+                  uploadMethod === 'links'
+                    ? 'bg-white text-blue-600 shadow-xs'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <Link2 className="w-3.5 h-3.5" />
+                <span>Option 2: Image Links</span>
+              </button>
+            </div>
+
+            {uploadMethod === 'direct' ? (
+              <ImageDropzone
+                onFilesSelected={handleUploadFiles}
+                isUploading={isUploading}
+                maxFiles={50}
+              />
+            ) : (
+              <ImageUrlImporter
+                sessionId={session?.id || ''}
+                onImagesImported={handleImagesImportedFromUrls}
+                isProcessing={isUploading}
+              />
+            )}
 
             {/* Uploaded Thumbnails Strip */}
             {uploadedImages.length > 0 && (
@@ -669,21 +773,24 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
               </div>
             </div>
 
-            {/* NEW REQUIREMENT: Output Format Selection */}
+            {/* Output Format Selection */}
             <div className="space-y-2 pt-2 border-t border-slate-100">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Select Output Format</span>
-                <span className="text-[11px] font-bold text-blue-600 uppercase font-mono">{config.output_format || 'webp'}</span>
+                <span className="text-[11px] font-bold text-blue-600 uppercase font-mono">
+                  {config.output_format === 'original' ? 'Original (Auto Match)' : config.output_format || 'original'}
+                </span>
               </div>
 
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 gap-1.5">
                 {[
+                  { id: 'original', name: 'Original', desc: 'Auto Match (PNG/JPG)' },
+                  { id: 'png', name: 'PNG', desc: 'Universal Preview' },
+                  { id: 'jpeg', name: 'JPEG', desc: 'Universal Photo' },
                   { id: 'webp', name: 'WebP', desc: 'Fastest Web' },
-                  { id: 'png', name: 'PNG', desc: 'Lossless' },
-                  { id: 'jpeg', name: 'JPEG', desc: 'Universal' },
                   { id: 'avif', name: 'AVIF', desc: 'Next-Gen' },
                 ].map((fmt) => {
-                  const isSelected = (config.output_format || 'webp') === fmt.id;
+                  const isSelected = (config.output_format || 'original') === fmt.id;
                   return (
                     <button
                       key={fmt.id}
@@ -698,11 +805,20 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
                           : 'bg-slate-50/70 border-slate-200 text-slate-700 hover:border-slate-300'
                       }`}
                     >
-                      <p className="text-xs font-bold">{fmt.name}</p>
+                      <div className="flex items-center justify-between">
+                        <p className="text-xs font-bold">{fmt.name}</p>
+                        {fmt.id === 'original' && (
+                          <span className="text-[9px] font-bold px-1 bg-emerald-100 text-emerald-800 rounded">Rec</span>
+                        )}
+                      </div>
                       <p className="text-[10px] text-slate-500 truncate">{fmt.desc}</p>
                     </button>
                   );
                 })}
+              </div>
+
+              <div className="p-2 rounded-md bg-blue-50/70 border border-blue-100 text-[11px] text-blue-900 leading-snug">
+                <strong>Preview Tip:</strong> Choose <strong>Original</strong> or <strong>PNG / JPEG</strong> to ensure downloaded files show full thumbnail previews in Windows Explorer &amp; Mac Finder.
               </div>
             </div>
 
@@ -710,10 +826,10 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
             <div className="space-y-1.5 pt-1">
               <div className="flex items-center justify-between text-xs">
                 <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">
-                  {config.output_format?.toUpperCase() || 'WEBP'} Quality / Compression
+                  {(config.output_format === 'original' ? 'Image' : config.output_format?.toUpperCase() || 'ORIGINAL')} Quality / Compression
                 </span>
                 <span className="font-bold font-mono text-emerald-600">
-                  {config.quality || config.webp_quality || 80}%
+                  {config.quality || config.webp_quality || 85}%
                 </span>
               </div>
               <input
@@ -721,7 +837,7 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
                 type="range"
                 min="10"
                 max="100"
-                value={config.quality || config.webp_quality || 80}
+                value={config.quality || config.webp_quality || 85}
                 onChange={(e) => {
                   const val = parseInt(e.target.value, 10);
                   setConfig((prev) => ({ ...prev, quality: val, webp_quality: val }));
@@ -729,11 +845,13 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
                 className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-emerald-600"
               />
               <p className="text-[11px] text-slate-500">
-                {(config.output_format || 'webp') === 'png'
-                  ? 'Optimized PNG with 8-level zlib deflate compression and alpha transparency.'
-                  : (config.output_format || 'webp') === 'avif'
+                {(config.output_format || 'original') === 'png'
+                  ? 'Optimized PNG with 7-level zlib deflate compression and alpha transparency.'
+                  : (config.output_format || 'original') === 'avif'
                   ? 'AVIF provides up to 50% smaller file size than JPEG with pristine quality.'
-                  : `Quality ${config.quality || 80}% provides ~${Math.round(100 - (config.quality || 80) * 0.7)}% size reduction with sharp clarity.`}
+                  : (config.output_format || 'original') === 'original'
+                  ? 'Preserves source format (PNG -> PNG, JPG -> JPG) with native OS previews.'
+                  : `Quality ${config.quality || 85}% provides ~${Math.round(100 - (config.quality || 85) * 0.7)}% size reduction with sharp clarity.`}
               </p>
             </div>
 
@@ -754,7 +872,9 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
                 ) : (
                   <>
                     <Sparkles className="w-4 h-4" />
-                    <span>Process {uploadedImages.length} Images to {(config.output_format || 'webp').toUpperCase()}</span>
+                    <span>
+                      Process {uploadedImages.length} Images to {config.output_format === 'original' ? 'Original Format' : (config.output_format || 'original').toUpperCase()}
+                    </span>
                   </>
                 )}
               </button>
@@ -978,6 +1098,7 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
                       origKB && parseFloat(origKB) > 0
                         ? Math.max(0, Math.round((1 - parseFloat(finalKB) / parseFloat(origKB)) * 100))
                         : null;
+                    const previewUrl = `/api/process/processed-preview/${proc.id}?token=${authToken || ''}`;
 
                     return (
                       <div
@@ -985,13 +1106,18 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
                         className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200 hover:border-slate-300 transition-colors"
                       >
                         <div className="flex items-center gap-3 min-w-0">
-                          <div className="w-10 h-10 rounded-md overflow-hidden bg-white border border-slate-200 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setActiveModalImage(previewUrl)}
+                            title="Click to view full preview in modal"
+                            className="w-10 h-10 rounded-md overflow-hidden bg-white border border-slate-200 shrink-0 cursor-pointer hover:opacity-80 transition-opacity ring-1 ring-slate-200"
+                          >
                             <img
-                              src={`/api/process/processed-preview/${proc.id}?token=${authToken}`}
+                              src={previewUrl}
                               alt={proc.output_filename}
                               className="w-full h-full object-cover"
                             />
-                          </div>
+                          </button>
                           <div className="min-w-0">
                             <p className="text-xs font-bold text-slate-800 truncate">
                               {proc.output_filename}
@@ -1008,15 +1134,25 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
                           </div>
                         </div>
 
-                        <div className="flex items-center gap-2 shrink-0">
-                          <a
-                            id={`download-single-${proc.id}`}
-                            href={`/api/process/download/image/${proc.id}?token=${authToken}`}
-                            download={proc.output_filename}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold rounded-lg border border-slate-200 shadow-xs transition-colors"
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => setActiveModalImage(previewUrl)}
+                            className="p-1.5 bg-white hover:bg-slate-100 text-slate-600 text-xs font-semibold rounded-lg border border-slate-200 shadow-xs transition-colors"
+                            title="Preview image"
                           >
-                            <Download className="w-3 h-3" /> {(proc.output_format || 'webp').toUpperCase()}
-                          </a>
+                            <Eye className="w-3.5 h-3.5" />
+                          </button>
+                          <button
+                            type="button"
+                            id={`download-single-${proc.id}`}
+                            onClick={() => handleDownloadSingleImage(proc)}
+                            className="inline-flex items-center gap-1 px-2.5 py-1 bg-blue-600 hover:bg-blue-700 text-white text-xs font-semibold rounded-lg shadow-xs transition-colors"
+                            title="Download watermarked file"
+                          >
+                            <Download className="w-3 h-3" />
+                            <span>Download {(proc.output_format || 'png').toUpperCase()}</span>
+                          </button>
                         </div>
                       </div>
                     );
@@ -1043,6 +1179,16 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
           </div>
         </div>
       )}
+
+      {/* Upload Source Modal (Option 1 Direct Upload / Option 2 Give Image Links) */}
+      <UploadSourceModal
+        isOpen={isUploadModalOpen}
+        onClose={() => setIsUploadModalOpen(false)}
+        sessionId={session?.id || ''}
+        onFilesSelected={handleUploadFiles}
+        onImagesImported={handleImagesImportedFromUrls}
+        isUploading={isUploading}
+      />
     </div>
   );
 };

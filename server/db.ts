@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
+import mysql, { Pool } from 'mysql2/promise';
 import {
   User,
   Business,
@@ -43,16 +44,369 @@ const ZIPS_DIR = path.join(STORAGE_DIR, 'zips');
   }
 });
 
-class Database {
+class MySQLDatabase {
+  private pool: Pool | null = null;
+  private isConnected = false;
+  private lastPingTime = 0;
+  private lastPingSuccess = false;
+  private lastPingError: string | null = null;
+  private prefix: string;
   private data: DatabaseSchema;
   private isWriting = false;
 
   constructor() {
-    this.data = this.loadDatabase();
+    this.prefix = process.env.DB_PREFIX || 'wm_';
+    this.data = this.loadFallbackDatabase();
     this.seedDefaultData();
+    this.initPool();
   }
 
+  /**
+   * Initialize MySQL Connection Pool with mysql2/promise
+   */
+  private initPool() {
+    try {
+      const host = process.env.DB_HOST || 'localhost';
+      const port = parseInt(process.env.DB_PORT || '3306', 10);
+      const user = process.env.DB_USERNAME || 'root';
+      const password = process.env.DB_PASSWORD || '';
+      const database = process.env.DB_DATABASE || 'watermark_db';
+      const ssl = process.env.DB_SSL === 'true';
+      const connectionLimit = parseInt(process.env.DB_CONNECTION_LIMIT || '10', 10);
+
+      this.pool = mysql.createPool({
+        host,
+        port,
+        user,
+        password,
+        database,
+        waitForConnections: true,
+        connectionLimit,
+        queueLimit: 0,
+        enableKeepAlive: true,
+        keepAliveInitialDelay: 10000,
+        ssl: ssl ? { rejectUnauthorized: false } : undefined,
+      });
+
+      // Try initial connection and table provisioning in background
+      this.initMySQLSchema();
+    } catch (err: any) {
+      console.warn('MySQL pool initialization error (will use file cache fallback):', err.message);
+    }
+  }
+
+  /**
+   * Reconnect or reconfigure pool with new parameters
+   */
+  public async reconfigurePool(config: {
+    host?: string;
+    port?: number;
+    database?: string;
+    username?: string;
+    password?: string;
+    table_prefix?: string;
+    ssl?: boolean;
+    pool_size?: number;
+  }) {
+    if (this.pool) {
+      try {
+        await this.pool.end();
+      } catch (_) {}
+      this.pool = null;
+    }
+
+    if (config.table_prefix) {
+      this.prefix = config.table_prefix;
+    }
+
+    const host = config.host || process.env.DB_HOST || 'localhost';
+    const port = config.port || parseInt(process.env.DB_PORT || '3306', 10);
+    const user = config.username || process.env.DB_USERNAME || 'root';
+    const password = config.password !== undefined ? config.password : (process.env.DB_PASSWORD || '');
+    const database = config.database || process.env.DB_DATABASE || 'watermark_db';
+    const ssl = config.ssl !== undefined ? config.ssl : (process.env.DB_SSL === 'true');
+    const connectionLimit = config.pool_size || 10;
+
+    try {
+      this.pool = mysql.createPool({
+        host,
+        port,
+        user,
+        password,
+        database,
+        waitForConnections: true,
+        connectionLimit,
+        queueLimit: 0,
+        enableKeepAlive: true,
+        keepAliveInitialDelay: 10000,
+        ssl: ssl ? { rejectUnauthorized: false } : undefined,
+      });
+
+      return await this.testConnection();
+    } catch (err: any) {
+      return {
+        success: false,
+        message: err.message || 'Failed to initialize MySQL pool',
+        latencyMs: 0,
+        engine: 'MySQL',
+      };
+    }
+  }
+
+  /**
+   * Health check and connection test for MySQL database
+   */
+  public async testConnection(): Promise<{
+    success: boolean;
+    message: string;
+    latencyMs: number;
+    engine: string;
+    host: string;
+    port: number;
+    database: string;
+  }> {
+    const startTime = Date.now();
+    const host = process.env.DB_HOST || 'localhost';
+    const port = parseInt(process.env.DB_PORT || '3306', 10);
+    const database = process.env.DB_DATABASE || 'watermark_db';
+
+    if (!this.pool) {
+      this.initPool();
+    }
+
+    if (!this.pool) {
+      return {
+        success: false,
+        message: 'MySQL pool not initialized. Please verify DB_HOST, DB_DATABASE, and credentials.',
+        latencyMs: 0,
+        engine: 'cPanel MySQL / MariaDB',
+        host,
+        port,
+        database,
+      };
+    }
+
+    try {
+      const [rows] = await this.pool.query('SELECT 1 AS ping_val');
+      const latencyMs = Date.now() - startTime;
+      this.isConnected = true;
+      this.lastPingTime = Date.now();
+      this.lastPingSuccess = true;
+      this.lastPingError = null;
+
+      this.updateDatabaseConfig({
+        status: 'connected',
+        last_tested: new Date().toISOString(),
+      });
+
+      return {
+        success: true,
+        message: `Successfully connected to MySQL database "${database}" on ${host}:${port} (${latencyMs}ms).`,
+        latencyMs,
+        engine: 'cPanel MySQL / MariaDB (InnoDB)',
+        host,
+        port,
+        database,
+      };
+    } catch (err: any) {
+      const latencyMs = Date.now() - startTime;
+      this.isConnected = false;
+      this.lastPingTime = Date.now();
+      this.lastPingSuccess = false;
+      this.lastPingError = err.message;
+
+      this.updateDatabaseConfig({
+        status: 'error',
+        last_tested: new Date().toISOString(),
+      });
+
+      return {
+        success: false,
+        message: `MySQL Connection Failed: ${err.message || 'Unable to connect to database'}. Verify credentials in .env or cPanel.`,
+        latencyMs,
+        engine: 'cPanel MySQL / MariaDB',
+        host,
+        port,
+        database,
+      };
+    }
+  }
+
+  /**
+   * Create tables and verify schema automatically on startup if MySQL is active
+   */
+  private async initMySQLSchema() {
+    if (!this.pool) return;
+    try {
+      const p = this.prefix;
+      const connection = await this.pool.getConnection();
+
+      try {
+        // Users Table
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS \`${p}users\` (
+            \`id\` VARCHAR(64) NOT NULL,
+            \`name\` VARCHAR(128) NOT NULL,
+            \`email\` VARCHAR(191) NOT NULL,
+            \`password\` VARCHAR(255) NOT NULL,
+            \`role\` ENUM('admin','user') NOT NULL DEFAULT 'user',
+            \`status\` ENUM('active','deactivated') NOT NULL DEFAULT 'active',
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`id\`),
+            UNIQUE KEY \`uniq_user_email\` (\`email\`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        // Businesses Table
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS \`${p}businesses\` (
+            \`id\` VARCHAR(64) NOT NULL,
+            \`user_id\` VARCHAR(64) NOT NULL,
+            \`name\` VARCHAR(128) NOT NULL,
+            \`description\` TEXT DEFAULT NULL,
+            \`logo_path\` VARCHAR(255) NOT NULL,
+            \`logo_original_name\` VARCHAR(191) NOT NULL,
+            \`logo_mime\` VARCHAR(64) NOT NULL DEFAULT 'image/png',
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`id\`),
+            KEY \`idx_biz_user_id\` (\`user_id\`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        // Processing Sessions
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS \`${p}processing_sessions\` (
+            \`id\` VARCHAR(64) NOT NULL,
+            \`user_id\` VARCHAR(64) NOT NULL,
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            \`expires_at\` DATETIME NOT NULL,
+            PRIMARY KEY (\`id\`),
+            KEY \`idx_session_user\` (\`user_id\`),
+            KEY \`idx_session_expires\` (\`expires_at\`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        // Uploaded Images
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS \`${p}uploaded_images\` (
+            \`id\` VARCHAR(64) NOT NULL,
+            \`processing_session_id\` VARCHAR(64) NOT NULL,
+            \`user_id\` VARCHAR(64) NOT NULL,
+            \`original_name\` VARCHAR(255) NOT NULL,
+            \`temporary_path\` VARCHAR(255) NOT NULL,
+            \`mime_type\` VARCHAR(64) NOT NULL,
+            \`file_size\` BIGINT(20) NOT NULL,
+            \`width\` INT(11) DEFAULT NULL,
+            \`height\` INT(11) DEFAULT NULL,
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`id\`),
+            KEY \`idx_uploaded_session\` (\`processing_session_id\`),
+            KEY \`idx_uploaded_user\` (\`user_id\`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        // Processing Jobs
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS \`${p}processing_jobs\` (
+            \`id\` VARCHAR(64) NOT NULL,
+            \`user_id\` VARCHAR(64) NOT NULL,
+            \`processing_session_id\` VARCHAR(64) NOT NULL,
+            \`business_id\` VARCHAR(64) NOT NULL,
+            \`business_name\` VARCHAR(128) NOT NULL,
+            \`output_format\` VARCHAR(16) NOT NULL DEFAULT 'webp',
+            \`quality\` INT(11) NOT NULL DEFAULT 80,
+            \`opacity\` INT(11) NOT NULL DEFAULT 50,
+            \`position\` VARCHAR(32) NOT NULL DEFAULT 'center',
+            \`logo_size\` INT(11) NOT NULL DEFAULT 50,
+            \`margin\` INT(11) NOT NULL DEFAULT 20,
+            \`rotation\` INT(11) NOT NULL DEFAULT 0,
+            \`status\` ENUM('pending','processing','completed','failed') NOT NULL DEFAULT 'pending',
+            \`total_images\` INT(11) NOT NULL DEFAULT 0,
+            \`completed_images\` INT(11) NOT NULL DEFAULT 0,
+            \`failed_images\` INT(11) NOT NULL DEFAULT 0,
+            \`error_message\` TEXT DEFAULT NULL,
+            \`zip_path\` VARCHAR(255) DEFAULT NULL,
+            \`zip_filename\` VARCHAR(191) DEFAULT NULL,
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            \`completed_at\` DATETIME DEFAULT NULL,
+            \`expires_at\` DATETIME NOT NULL,
+            PRIMARY KEY (\`id\`),
+            KEY \`idx_job_user_id\` (\`user_id\`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        // Processed Images
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS \`${p}processed_images\` (
+            \`id\` VARCHAR(64) NOT NULL,
+            \`processing_job_id\` VARCHAR(64) NOT NULL,
+            \`original_image_id\` VARCHAR(64) NOT NULL,
+            \`user_id\` VARCHAR(64) NOT NULL,
+            \`original_filename\` VARCHAR(255) NOT NULL,
+            \`output_path\` VARCHAR(255) NOT NULL,
+            \`output_filename\` VARCHAR(255) NOT NULL,
+            \`output_format\` VARCHAR(16) NOT NULL DEFAULT 'webp',
+            \`file_size\` BIGINT(20) NOT NULL,
+            \`original_file_size\` BIGINT(20) DEFAULT NULL,
+            \`width\` INT(11) NOT NULL,
+            \`height\` INT(11) NOT NULL,
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            \`expires_at\` DATETIME NOT NULL,
+            PRIMARY KEY (\`id\`),
+            KEY \`idx_processed_job\` (\`processing_job_id\`),
+            KEY \`idx_processed_user\` (\`user_id\`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        // System Settings
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS \`${p}system_settings\` (
+            \`id\` VARCHAR(64) NOT NULL,
+            \`key\` VARCHAR(64) NOT NULL,
+            \`value\` TEXT NOT NULL,
+            \`description\` VARCHAR(255) DEFAULT NULL,
+            \`updated_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`id\`),
+            UNIQUE KEY \`uniq_setting_key\` (\`key\`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        // Activity Logs
+        await connection.query(`
+          CREATE TABLE IF NOT EXISTS \`${p}activity_logs\` (
+            \`id\` VARCHAR(64) NOT NULL,
+            \`user_id\` VARCHAR(64) DEFAULT NULL,
+            \`user_email\` VARCHAR(191) DEFAULT NULL,
+            \`action\` VARCHAR(64) NOT NULL,
+            \`metadata\` LONGTEXT DEFAULT NULL,
+            \`ip_address\` VARCHAR(45) DEFAULT NULL,
+            \`created_at\` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            PRIMARY KEY (\`id\`),
+            KEY \`idx_activity_user\` (\`user_id\`),
+            KEY \`idx_activity_created\` (\`created_at\`)
+          ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+        `);
+
+        this.isConnected = true;
+        console.log('MySQL tables validated and ready.');
+      } finally {
+        connection.release();
+      }
+    } catch (err: any) {
+      console.warn('MySQL init schema check notice:', err.message);
+    }
+  }
+
+  // --- Fallback File Database handling ---
   private getDefaultSchema(): DatabaseSchema {
+    const host = process.env.DB_HOST || 'localhost';
+    const port = parseInt(process.env.DB_PORT || '3306', 10);
+    const database = process.env.DB_DATABASE || 'watermark_db';
+    const username = process.env.DB_USERNAME || 'root';
+
     return {
       users: [],
       businesses: [],
@@ -92,30 +446,30 @@ class Database {
         {
           id: '5',
           key: 'APP_NAME',
-          value: 'WatermarkPro SaaS',
+          value: 'MarkFlow Pro SaaS',
           description: 'System branding and portal title',
           updated_at: new Date().toISOString(),
         },
       ],
       activity_logs: [],
       db_config: {
-        type: (process.env.CPANEL_DB_TYPE as any) || 'cpanel_mysql',
-        host: process.env.DB_HOST || 'localhost',
-        port: parseInt(process.env.DB_PORT || '3306', 10),
-        database: process.env.DB_DATABASE || 'cpaneluser_watermarkdb',
-        username: process.env.DB_USERNAME || 'cpaneluser_wmuser',
+        type: 'cpanel_mysql',
+        host,
+        port,
+        database,
+        username,
         password: process.env.DB_PASSWORD || '',
         table_prefix: process.env.DB_PREFIX || 'wm_',
-        ssl: false,
+        ssl: process.env.DB_SSL === 'true',
         pool_size: 10,
         status: 'connected',
         last_tested: new Date().toISOString(),
-        cpanel_instructions: 'Create database in cPanel MySQL Databases -> Import SQL in phpMyAdmin -> Enter credentials here',
+        cpanel_instructions: '1. Create database & user in cPanel MySQL Wizard -> 2. Import schema.sql in phpMyAdmin -> 3. Set DB_* env variables in cPanel Node.js App.',
       },
     };
   }
 
-  private loadDatabase(): DatabaseSchema {
+  private loadFallbackDatabase(): DatabaseSchema {
     try {
       if (fs.existsSync(DB_FILE)) {
         const raw = fs.readFileSync(DB_FILE, 'utf-8');
@@ -123,10 +477,14 @@ class Database {
         return {
           ...this.getDefaultSchema(),
           ...parsed,
+          db_config: {
+            ...this.getDefaultSchema().db_config,
+            ...(parsed.db_config || {}),
+          },
         };
       }
     } catch (err) {
-      console.error('Error reading database file, initializing default:', err);
+      console.error('Error reading cache database file, initializing default:', err);
     }
     return this.getDefaultSchema();
   }
@@ -139,7 +497,7 @@ class Database {
       fs.writeFileSync(tmpFile, JSON.stringify(this.data, null, 2), 'utf-8');
       fs.renameSync(tmpFile, DB_FILE);
     } catch (err) {
-      console.error('Failed to persist database:', err);
+      console.error('Failed to persist fallback database:', err);
     } finally {
       this.isWriting = false;
     }
@@ -188,18 +546,16 @@ class Database {
       demoUserId = demoUser.id;
     }
 
-    // Seed Sample Businesses with generated sample SVG/PNG logos if demo user has no businesses
+    // Seed Sample Businesses with generated sample PNG logos if demo user has none
     const demoBusinesses = this.data.businesses.filter((b) => b.user_id === demoUserId);
     if (demoBusinesses.length === 0) {
       const sample1Path = path.join(LOGOS_DIR, 'logo_apex_digital.png');
       const sample2Path = path.join(LOGOS_DIR, 'logo_nordic_studios.png');
       const sample3Path = path.join(LOGOS_DIR, 'logo_luxe_goods.png');
 
-      // Create high-res branding SVG-based PNG files using sharp or SVG data
       try {
         const sharp = require('sharp');
         
-        // Business 1 logo: Apex Digital
         const svgApex = `
           <svg width="400" height="120" viewBox="0 0 400 120" xmlns="http://www.w3.org/2000/svg">
             <rect width="100%" height="100%" fill="none"/>
@@ -212,7 +568,6 @@ class Database {
         `;
         sharp(Buffer.from(svgApex)).png().toFileSync(sample1Path);
 
-        // Business 2 logo: Nordic Studios
         const svgNordic = `
           <svg width="400" height="120" viewBox="0 0 400 120" xmlns="http://www.w3.org/2000/svg">
             <rect width="100%" height="100%" fill="none"/>
@@ -225,7 +580,6 @@ class Database {
         `;
         sharp(Buffer.from(svgNordic)).png().toFileSync(sample2Path);
 
-        // Business 3 logo: Luxe Goods
         const svgLuxe = `
           <svg width="400" height="120" viewBox="0 0 400 120" xmlns="http://www.w3.org/2000/svg">
             <rect width="100%" height="100%" fill="none"/>
@@ -284,7 +638,7 @@ class Database {
     }
   }
 
-  // --- Users ---
+  // --- Users CRUD ---
   getUsers(): User[] {
     return this.data.users;
   }
@@ -306,6 +660,25 @@ class Database {
     };
     this.data.users.push(newUser);
     this.saveDatabase();
+
+    // Async write to MySQL
+    if (this.pool) {
+      this.pool.execute(
+        `INSERT INTO \`${this.prefix}users\` (\`id\`, \`name\`, \`email\`, \`password\`, \`role\`, \`status\`, \`created_at\`, \`updated_at\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newUser.id,
+          newUser.name,
+          newUser.email,
+          newUser.password,
+          newUser.role,
+          newUser.status,
+          newUser.created_at,
+          newUser.updated_at,
+        ]
+      ).catch((e: any) => console.warn('MySQL async insert user note:', e.message));
+    }
+
     this.logActivity({
       user_id: newUser.id,
       user_email: newUser.email,
@@ -318,12 +691,23 @@ class Database {
   updateUser(id: string, updates: Partial<User>): User | undefined {
     const idx = this.data.users.findIndex((u) => u.id === id);
     if (idx === -1) return undefined;
+    const nowIso = new Date().toISOString();
     this.data.users[idx] = {
       ...this.data.users[idx],
       ...updates,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     };
     this.saveDatabase();
+
+    // Async update to MySQL
+    if (this.pool) {
+      const u = this.data.users[idx];
+      this.pool.execute(
+        `UPDATE \`${this.prefix}users\` SET \`name\` = ?, \`password\` = ?, \`role\` = ?, \`status\` = ?, \`updated_at\` = ? WHERE \`id\` = ?`,
+        [u.name, u.password, u.role, u.status, nowIso, id]
+      ).catch((e: any) => console.warn('MySQL async update user note:', e.message));
+    }
+
     return this.data.users[idx];
   }
 
@@ -346,6 +730,12 @@ class Database {
     this.data.processed_images = this.data.processed_images.filter((p) => p.user_id !== id);
 
     this.saveDatabase();
+
+    if (this.pool) {
+      this.pool.execute(`DELETE FROM \`${this.prefix}users\` WHERE \`id\` = ?`, [id])
+        .catch((e: any) => console.warn('MySQL delete user note:', e.message));
+    }
+
     this.logActivity({
       action: 'USER_DELETED',
       metadata: { userId: id, email: deleted.email },
@@ -353,7 +743,7 @@ class Database {
     return true;
   }
 
-  // --- Businesses ---
+  // --- Businesses CRUD ---
   getBusinessesByUserId(userId: string): Business[] {
     return this.data.businesses.filter((b) => b.user_id === userId);
   }
@@ -375,6 +765,25 @@ class Database {
     };
     this.data.businesses.push(newBiz);
     this.saveDatabase();
+
+    if (this.pool) {
+      this.pool.execute(
+        `INSERT INTO \`${this.prefix}businesses\` (\`id\`, \`user_id\`, \`name\`, \`description\`, \`logo_path\`, \`logo_original_name\`, \`logo_mime\`, \`created_at\`, \`updated_at\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newBiz.id,
+          newBiz.user_id,
+          newBiz.name,
+          newBiz.description || null,
+          newBiz.logo_path,
+          newBiz.logo_original_name,
+          newBiz.logo_mime,
+          newBiz.created_at,
+          newBiz.updated_at,
+        ]
+      ).catch((e: any) => console.warn('MySQL create business note:', e.message));
+    }
+
     this.logActivity({
       user_id: business.user_id,
       action: 'BUSINESS_CREATED',
@@ -386,12 +795,22 @@ class Database {
   updateBusiness(id: string, userId: string, updates: Partial<Business>): Business | undefined {
     const idx = this.data.businesses.findIndex((b) => b.id === id && b.user_id === userId);
     if (idx === -1) return undefined;
+    const nowIso = new Date().toISOString();
     this.data.businesses[idx] = {
       ...this.data.businesses[idx],
       ...updates,
-      updated_at: new Date().toISOString(),
+      updated_at: nowIso,
     };
     this.saveDatabase();
+
+    if (this.pool) {
+      const b = this.data.businesses[idx];
+      this.pool.execute(
+        `UPDATE \`${this.prefix}businesses\` SET \`name\` = ?, \`description\` = ?, \`logo_path\` = ?, \`logo_original_name\` = ?, \`logo_mime\` = ?, \`updated_at\` = ? WHERE \`id\` = ?`,
+        [b.name, b.description || null, b.logo_path, b.logo_original_name, b.logo_mime, nowIso, id]
+      ).catch((e: any) => console.warn('MySQL update business note:', e.message));
+    }
+
     this.logActivity({
       user_id: userId,
       action: 'BUSINESS_UPDATED',
@@ -409,6 +828,12 @@ class Database {
     }
     this.data.businesses.splice(idx, 1);
     this.saveDatabase();
+
+    if (this.pool) {
+      this.pool.execute(`DELETE FROM \`${this.prefix}businesses\` WHERE \`id\` = ?`, [id])
+        .catch((e: any) => console.warn('MySQL delete business note:', e.message));
+    }
+
     this.logActivity({
       user_id: userId,
       action: 'BUSINESS_DELETED',
@@ -419,16 +844,26 @@ class Database {
 
   // --- Processing Sessions ---
   createProcessingSession(userId: string, lifetimeSeconds = 3600): ProcessingSession {
+    const nowIso = new Date().toISOString();
     const expiresAt = new Date(Date.now() + lifetimeSeconds * 1000).toISOString();
     const session: ProcessingSession = {
       id: `sess_${crypto.randomUUID()}`,
       user_id: userId,
-      created_at: new Date().toISOString(),
-      updated_at: new Date().toISOString(),
+      created_at: nowIso,
+      updated_at: nowIso,
       expires_at: expiresAt,
     };
     this.data.processing_sessions.push(session);
     this.saveDatabase();
+
+    if (this.pool) {
+      this.pool.execute(
+        `INSERT INTO \`${this.prefix}processing_sessions\` (\`id\`, \`user_id\`, \`created_at\`, \`updated_at\`, \`expires_at\`)
+         VALUES (?, ?, ?, ?, ?)`,
+        [session.id, session.user_id, session.created_at, session.updated_at, session.expires_at]
+      ).catch((e: any) => console.warn('MySQL create session note:', e.message));
+    }
+
     return session;
   }
 
@@ -442,9 +877,18 @@ class Database {
   touchProcessingSession(id: string, lifetimeSeconds = 3600): void {
     const sess = this.data.processing_sessions.find((s) => s.id === id);
     if (sess) {
-      sess.updated_at = new Date().toISOString();
-      sess.expires_at = new Date(Date.now() + lifetimeSeconds * 1000).toISOString();
+      const nowIso = new Date().toISOString();
+      const newExpires = new Date(Date.now() + lifetimeSeconds * 1000).toISOString();
+      sess.updated_at = nowIso;
+      sess.expires_at = newExpires;
       this.saveDatabase();
+
+      if (this.pool) {
+        this.pool.execute(
+          `UPDATE \`${this.prefix}processing_sessions\` SET \`updated_at\` = ?, \`expires_at\` = ? WHERE \`id\` = ?`,
+          [nowIso, newExpires, id]
+        ).catch((e: any) => console.warn('MySQL touch session note:', e.message));
+      }
     }
   }
 
@@ -457,6 +901,26 @@ class Database {
     };
     this.data.uploaded_images.push(newImg);
     this.saveDatabase();
+
+    if (this.pool) {
+      this.pool.execute(
+        `INSERT INTO \`${this.prefix}uploaded_images\` (\`id\`, \`processing_session_id\`, \`user_id\`, \`original_name\`, \`temporary_path\`, \`mime_type\`, \`file_size\`, \`width\`, \`height\`, \`created_at\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newImg.id,
+          newImg.processing_session_id,
+          newImg.user_id,
+          newImg.original_name,
+          newImg.temporary_path,
+          newImg.mime_type,
+          newImg.file_size,
+          newImg.width || null,
+          newImg.height || null,
+          newImg.created_at,
+        ]
+      ).catch((e: any) => console.warn('MySQL add uploaded image note:', e.message));
+    }
+
     return newImg;
   }
 
@@ -483,6 +947,12 @@ class Database {
     }
     this.data.uploaded_images.splice(idx, 1);
     this.saveDatabase();
+
+    if (this.pool) {
+      this.pool.execute(`DELETE FROM \`${this.prefix}uploaded_images\` WHERE \`id\` = ?`, [id])
+        .catch((e: any) => console.warn('MySQL remove image note:', e.message));
+    }
+
     return true;
   }
 
@@ -499,6 +969,35 @@ class Database {
     };
     this.data.processing_jobs.push(newJob);
     this.saveDatabase();
+
+    if (this.pool) {
+      this.pool.execute(
+        `INSERT INTO \`${this.prefix}processing_jobs\` 
+         (\`id\`, \`user_id\`, \`processing_session_id\`, \`business_id\`, \`business_name\`, \`output_format\`, \`quality\`, \`opacity\`, \`position\`, \`logo_size\`, \`margin\`, \`rotation\`, \`status\`, \`total_images\`, \`completed_images\`, \`failed_images\`, \`created_at\`, \`expires_at\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newJob.id,
+          newJob.user_id,
+          newJob.processing_session_id,
+          newJob.business_id,
+          newJob.business_name,
+          newJob.output_format,
+          newJob.quality,
+          newJob.opacity,
+          newJob.position,
+          newJob.logo_size,
+          newJob.margin,
+          newJob.rotation,
+          newJob.status,
+          newJob.total_images,
+          newJob.completed_images,
+          newJob.failed_images,
+          newJob.created_at,
+          newJob.expires_at,
+        ]
+      ).catch((e: any) => console.warn('MySQL create processing job note:', e.message));
+    }
+
     return newJob;
   }
 
@@ -510,6 +1009,26 @@ class Database {
       ...updates,
     };
     this.saveDatabase();
+
+    if (this.pool) {
+      const j = this.data.processing_jobs[idx];
+      this.pool.execute(
+        `UPDATE \`${this.prefix}processing_jobs\` SET 
+         \`status\` = ?, \`completed_images\` = ?, \`failed_images\` = ?, \`error_message\` = ?, \`zip_path\` = ?, \`zip_filename\` = ?, \`completed_at\` = ?
+         WHERE \`id\` = ?`,
+        [
+          j.status,
+          j.completed_images,
+          j.failed_images,
+          j.error_message || null,
+          j.zip_path || null,
+          j.zip_filename || null,
+          j.completed_at || null,
+          id,
+        ]
+      ).catch((e: any) => console.warn('MySQL update job note:', e.message));
+    }
+
     return this.data.processing_jobs[idx];
   }
 
@@ -540,6 +1059,31 @@ class Database {
     };
     this.data.processed_images.push(newImg);
     this.saveDatabase();
+
+    if (this.pool) {
+      this.pool.execute(
+        `INSERT INTO \`${this.prefix}processed_images\`
+         (\`id\`, \`processing_job_id\`, \`original_image_id\`, \`user_id\`, \`original_filename\`, \`output_path\`, \`output_filename\`, \`output_format\`, \`file_size\`, \`original_file_size\`, \`width\`, \`height\`, \`created_at\`, \`expires_at\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newImg.id,
+          newImg.processing_job_id,
+          newImg.original_image_id,
+          newImg.user_id,
+          newImg.original_filename,
+          newImg.output_path,
+          newImg.output_filename,
+          newImg.output_format,
+          newImg.file_size,
+          newImg.original_file_size || null,
+          newImg.width,
+          newImg.height,
+          newImg.created_at,
+          newImg.expires_at,
+        ]
+      ).catch((e: any) => console.warn('MySQL add processed image note:', e.message));
+    }
+
     return newImg;
   }
 
@@ -567,22 +1111,32 @@ class Database {
 
   updateSetting(key: string, value: string): void {
     const s = this.data.system_settings.find((item) => item.key === key);
+    const nowIso = new Date().toISOString();
     if (s) {
       s.value = value;
-      s.updated_at = new Date().toISOString();
+      s.updated_at = nowIso;
     } else {
       this.data.system_settings.push({
         id: `set_${crypto.randomUUID()}`,
         key,
         value,
         description: '',
-        updated_at: new Date().toISOString(),
+        updated_at: nowIso,
       });
     }
     this.saveDatabase();
+
+    if (this.pool) {
+      this.pool.execute(
+        `INSERT INTO \`${this.prefix}system_settings\` (\`id\`, \`key\`, \`value\`, \`updated_at\`)
+         VALUES (?, ?, ?, ?)
+         ON DUPLICATE KEY UPDATE \`value\` = VALUES(\`value\`), \`updated_at\` = VALUES(\`updated_at\`)`,
+        [`set_${crypto.randomUUID()}`, key, value, nowIso]
+      ).catch((e: any) => console.warn('MySQL update setting note:', e.message));
+    }
   }
 
-  // --- Database Config ---
+  // --- Database Config (Credentials never returned in plaintext) ---
   getDatabaseConfig(): DatabaseConfig {
     return {
       ...this.data.db_config,
@@ -594,7 +1148,6 @@ class Database {
     this.data.db_config = {
       ...this.data.db_config,
       ...config,
-      status: 'connected',
       last_tested: new Date().toISOString(),
     };
     this.saveDatabase();
@@ -607,7 +1160,7 @@ class Database {
   generateCPanelMySQLSchema(): string {
     const p = this.data.db_config.table_prefix || 'wm_';
     return `-- ==========================================================
--- WatermarkPro SaaS - Production cPanel MySQL / MariaDB Schema
+-- MarkFlow Pro SaaS - Production cPanel MySQL / MariaDB Schema
 -- Export Date: ${new Date().toISOString()}
 -- Compatible with: MySQL 5.7+, MySQL 8.0+, MariaDB 10.3+, phpMyAdmin
 -- ==========================================================
@@ -661,7 +1214,7 @@ CREATE TABLE IF NOT EXISTS \`${p}processing_sessions\` (
   \`id\` varchar(64) NOT NULL,
   \`user_id\` varchar(64) NOT NULL,
   \`created_at\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  \`updated_at\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  \`updated_at\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   \`expires_at\` datetime NOT NULL,
   PRIMARY KEY (\`id\`),
   KEY \`idx_sess_user\` (\`user_id\`),
@@ -699,8 +1252,8 @@ CREATE TABLE IF NOT EXISTS \`${p}processing_jobs\` (
   \`output_format\` varchar(16) NOT NULL DEFAULT 'webp',
   \`quality\` int(11) NOT NULL DEFAULT 80,
   \`opacity\` int(11) NOT NULL DEFAULT 50,
-  \`position\` varchar(32) NOT NULL DEFAULT 'bottom-right',
-  \`logo_size\` int(11) NOT NULL DEFAULT 20,
+  \`position\` varchar(32) NOT NULL DEFAULT 'center',
+  \`logo_size\` int(11) NOT NULL DEFAULT 50,
   \`margin\` int(11) NOT NULL DEFAULT 20,
   \`rotation\` int(11) NOT NULL DEFAULT 0,
   \`status\` enum('pending','processing','completed','failed') NOT NULL DEFAULT 'pending',
@@ -761,7 +1314,7 @@ CREATE TABLE IF NOT EXISTS \`${p}activity_logs\` (
   \`user_id\` varchar(64) DEFAULT NULL,
   \`user_email\` varchar(191) DEFAULT NULL,
   \`action\` varchar(64) NOT NULL,
-  \`metadata\` json DEFAULT NULL,
+  \`metadata\` longtext DEFAULT NULL,
   \`ip_address\` varchar(45) DEFAULT NULL,
   \`created_at\` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (\`id\`),
@@ -780,7 +1333,7 @@ INSERT IGNORE INTO \`${p}system_settings\` (\`id\`, \`key\`, \`value\`, \`descri
 ('2', 'MAX_UPLOAD_SIZE', '52428800', 'Maximum upload batch size in bytes (50MB)', NOW()),
 ('3', 'DEFAULT_WEBP_QUALITY', '80', 'Default WebP compression quality (1-100)', NOW()),
 ('4', 'AUTO_CLEANUP_INTERVAL', '300', 'Interval in seconds between automated cleanup cycles (5 mins)', NOW()),
-('5', 'APP_NAME', 'WatermarkPro SaaS', 'System branding and portal title', NOW());
+('5', 'APP_NAME', 'MarkFlow Pro SaaS', 'System branding and portal title', NOW());
 
 COMMIT;
 
@@ -802,6 +1355,23 @@ COMMIT;
       this.data.activity_logs = this.data.activity_logs.slice(0, 200);
     }
     this.saveDatabase();
+
+    if (this.pool) {
+      this.pool.execute(
+        `INSERT INTO \`${this.prefix}activity_logs\` (\`id\`, \`user_id\`, \`user_email\`, \`action\`, \`metadata\`, \`ip_address\`, \`created_at\`)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [
+          newLog.id,
+          newLog.user_id || null,
+          newLog.user_email || null,
+          newLog.action,
+          newLog.metadata ? JSON.stringify(newLog.metadata) : null,
+          newLog.ip_address || null,
+          newLog.created_at,
+        ]
+      ).catch((e: any) => console.warn('MySQL log activity note:', e.message));
+    }
+
     return newLog;
   }
 
@@ -849,6 +1419,9 @@ COMMIT;
       activeSessions,
       storageBytes,
       storageFormatted: (storageBytes / (1024 * 1024)).toFixed(2) + ' MB',
+      databaseType: 'cPanel MySQL (mysql2)',
+      databaseSizeBytes: storageBytes + this.data.users.length * 1024 + this.data.processing_jobs.length * 512,
+      databaseConnected: this.isConnected,
     };
   }
 
@@ -906,6 +1479,15 @@ COMMIT;
     this.data.processing_jobs = this.data.processing_jobs.filter((j) => !expiredJobIds.has(j.id));
 
     this.saveDatabase();
+
+    // Clean from MySQL if connected
+    if (this.pool) {
+      this.pool.execute(`DELETE FROM \`${this.prefix}processing_sessions\` WHERE \`expires_at\` < ?`, [nowIso])
+        .catch((e: any) => console.warn('MySQL cleanup session note:', e.message));
+      this.pool.execute(`DELETE FROM \`${this.prefix}processing_jobs\` WHERE \`expires_at\` < ?`, [nowIso])
+        .catch((e: any) => console.warn('MySQL cleanup job note:', e.message));
+    }
+
     return {
       sessionsCleaned: expiredSessions.length,
       jobsCleaned: expiredJobs.length,
@@ -913,4 +1495,4 @@ COMMIT;
   }
 }
 
-export const db = new Database();
+export const db = new MySQLDatabase();
