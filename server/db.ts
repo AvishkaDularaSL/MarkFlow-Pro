@@ -447,7 +447,9 @@ class AppDatabase {
   }
 
   getUserByEmail(email: string): User | undefined {
-    return this.data.users.find((u) => u.email.toLowerCase() === email.toLowerCase());
+    if (!email) return undefined;
+    const clean = email.trim().toLowerCase();
+    return this.data.users.find((u) => u.email.trim().toLowerCase() === clean);
   }
 
   createUser(user: Omit<User, 'id' | 'created_at' | 'updated_at'>): User {

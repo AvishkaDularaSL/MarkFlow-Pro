@@ -25,13 +25,22 @@ export const Login: React.FC<LoginProps> = ({ onNavigate }) => {
 
     setIsLoading(true);
     try {
-      const res = await api.post<{ token: string; user: any }>('/api/auth/login', {
-        email,
+      const trimmedEmail = email.trim().toLowerCase();
+      const res = await api.post<{ token?: string; user?: any; data?: any }>('/api/auth/login', {
+        email: trimmedEmail,
         password,
       });
-      login(res.token, res.user);
-      success('Welcome back!', `Signed in as ${res.user.name}`);
-      if (res.user.role === 'admin') {
+
+      const user = res?.user || (res as any)?.data?.user;
+      const token = res?.token || (res as any)?.data?.token;
+
+      if (!token || !user) {
+        throw new Error('Invalid sign-in response received. Please check credentials and try again.');
+      }
+
+      login(token, user);
+      success('Welcome back!', `Signed in as ${user.name || user.email || 'User'}`);
+      if (user.role === 'admin') {
         onNavigate('admin-dashboard');
       } else {
         onNavigate('dashboard');

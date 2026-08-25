@@ -37,13 +37,22 @@ export const Register: React.FC<RegisterProps> = ({ onNavigate }) => {
 
     setIsLoading(true);
     try {
-      const res = await api.post<{ token: string; user: any }>('/api/auth/register', {
-        name,
-        email,
+      const trimmedEmail = email.trim().toLowerCase();
+      const res = await api.post<{ token?: string; user?: any; data?: any }>('/api/auth/register', {
+        name: name.trim(),
+        email: trimmedEmail,
         password,
       });
-      login(res.token, res.user);
-      success('Account Created!', `Welcome to WatermarkPro, ${res.user.name}`);
+
+      const user = res?.user || (res as any)?.data?.user;
+      const token = res?.token || (res as any)?.data?.token;
+
+      if (!token || !user) {
+        throw new Error('Registration completed but could not establish session. Please sign in.');
+      }
+
+      login(token, user);
+      success('Account Created!', `Welcome to WatermarkPro, ${user.name || user.email || 'User'}`);
       onNavigate('dashboard');
     } catch (err: any) {
       error('Registration Failed', err.message || 'Could not register account.');
