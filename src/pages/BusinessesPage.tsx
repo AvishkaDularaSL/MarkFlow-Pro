@@ -69,6 +69,7 @@ export const BusinessesPage: React.FC<BusinessesPageProps> = ({
     setFormDesc('');
     setLogoFile(null);
     setLogoPreviewUrl(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setIsAddModalOpen(true);
   };
 
@@ -78,6 +79,7 @@ export const BusinessesPage: React.FC<BusinessesPageProps> = ({
     setFormDesc(biz.description || '');
     setLogoFile(null);
     setLogoPreviewUrl(`/api/businesses/${biz.id}/logo?t=${Date.now()}`);
+    if (fileInputRef.current) fileInputRef.current.value = '';
     setIsAddModalOpen(true);
   };
 
@@ -130,7 +132,7 @@ export const BusinessesPage: React.FC<BusinessesPageProps> = ({
         success('Business Created', `${formName} has been registered.`);
       }
       setIsAddModalOpen(false);
-      fetchBusinesses();
+      await fetchBusinesses();
     } catch (err: any) {
       error('Save Failed', err.message || 'Could not save business.');
     } finally {

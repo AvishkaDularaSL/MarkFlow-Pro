@@ -81,82 +81,124 @@ export const HistoryPage: React.FC<HistoryPageProps> = ({ onNavigate }) => {
       {!isLoading && jobs.length > 0 && (
         <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
           <div className="overflow-x-auto">
-            <table className="w-full text-left text-xs">
+            <table className="w-full text-left text-xs border-collapse">
               <thead>
-                <tr className="border-b border-slate-200 bg-slate-50 text-slate-500 uppercase tracking-wider text-[11px] font-bold">
-                  <th className="py-3.5 px-4">Job ID &amp; Brand</th>
-                  <th className="py-3.5 px-4">Images</th>
-                  <th className="py-3.5 px-4">Watermark Config</th>
-                  <th className="py-3.5 px-4">Date &amp; Status</th>
-                  <th className="py-3.5 px-4">Storage Expiry</th>
-                  <th className="py-3.5 px-4 text-right">Download Archive</th>
+                <tr className="border-b border-slate-200 bg-slate-50/80 text-slate-500 uppercase tracking-wider text-[11px] font-semibold select-none">
+                  <th className="py-3.5 px-5 whitespace-nowrap min-w-[180px]">Job &amp; Brand</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap text-center min-w-[100px]">Images</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap min-w-[200px]">Watermark Config</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap min-w-[160px]">Created &amp; Status</th>
+                  <th className="py-3.5 px-4 whitespace-nowrap min-w-[140px]">Storage Status</th>
+                  <th className="py-3.5 px-5 text-right whitespace-nowrap min-w-[140px]">Download</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
                 {jobs.map((job) => {
                   const isExpired = new Date(job.expires_at).getTime() < Date.now();
+                  const formattedDate = new Date(job.created_at).toLocaleString([], {
+                    month: 'short',
+                    day: 'numeric',
+                    year: 'numeric',
+                    hour: '2-digit',
+                    minute: '2-digit',
+                  });
+
                   return (
-                    <tr key={job.id} className="hover:bg-slate-50 transition-colors">
-                      <td className="py-4 px-4">
-                        <div className="font-bold text-slate-900 text-sm">{job.business_name}</div>
-                        <div className="text-[11px] text-slate-400 font-mono mt-0.5">{job.id}</div>
+                    <tr key={job.id} className="hover:bg-slate-50/80 transition-colors">
+                      {/* Job & Brand */}
+                      <td className="py-4 px-5 align-middle">
+                        <div className="flex items-center gap-2.5">
+                          <div className="w-8 h-8 rounded-lg bg-blue-50 border border-blue-100 flex items-center justify-center text-blue-600 font-bold text-xs shrink-0">
+                            {job.business_name ? job.business_name.charAt(0).toUpperCase() : 'B'}
+                          </div>
+                          <div className="min-w-0 max-w-[200px]">
+                            <div className="font-semibold text-slate-900 text-sm truncate" title={job.business_name}>
+                              {job.business_name || 'Custom Brand'}
+                            </div>
+                            <div className="text-[11px] text-slate-400 font-mono tracking-tight truncate" title={job.id}>
+                              #{job.id.replace(/^job_/, '').slice(0, 10)}...
+                            </div>
+                          </div>
+                        </div>
                       </td>
-                      <td className="py-4 px-4 text-slate-600 font-mono">
-                        <span className="font-bold text-slate-900">{job.completed_images}</span> /{' '}
-                        {job.total_images} converted
+
+                      {/* Images count */}
+                      <td className="py-4 px-4 align-middle text-center">
+                        <div className="inline-flex flex-col items-center">
+                          <span className="font-bold text-slate-900 font-mono text-xs">
+                            {job.completed_images} / {job.total_images}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-medium">processed</span>
+                        </div>
                       </td>
-                      <td className="py-4 px-4">
-                        <div className="flex flex-wrap gap-1">
-                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] capitalize border border-slate-200 font-medium">
+
+                      {/* Config badges */}
+                      <td className="py-4 px-4 align-middle">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[11px] font-medium border border-slate-200 capitalize whitespace-nowrap">
                             {job.position.replace('-', ' ')}
                           </span>
-                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 text-[10px] border border-slate-200 font-medium">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 text-[11px] font-medium border border-slate-200 whitespace-nowrap">
                             Op: {job.opacity}%
                           </span>
-                          <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 text-[10px] border border-emerald-200 font-bold font-mono uppercase">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-700 text-[11px] font-semibold border border-emerald-200 font-mono uppercase whitespace-nowrap">
                             {(job.output_format || 'webp')} Q:{job.quality}%
                           </span>
                         </div>
                       </td>
-                      <td className="py-4 px-4">
-                        <div className="text-slate-700 font-medium">
-                          {new Date(job.created_at).toLocaleString()}
-                        </div>
-                        <div className="mt-1">
-                          {job.status === 'completed' ? (
-                            <span className="inline-flex items-center gap-1 text-[10px] font-bold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded border border-emerald-200">
-                              <CheckCircle2 className="w-3 h-3" /> Completed
-                            </span>
-                          ) : (
-                            <span className="text-[10px] font-bold text-amber-700 bg-amber-50 px-2 py-0.5 rounded capitalize">
-                              {job.status}
-                            </span>
-                          )}
+
+                      {/* Date & Status */}
+                      <td className="py-4 px-4 align-middle">
+                        <div className="space-y-1">
+                          <div className="text-slate-700 text-xs font-medium whitespace-nowrap">
+                            {formattedDate}
+                          </div>
+                          <div>
+                            {job.status === 'completed' ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 bg-emerald-50 px-2 py-0.5 rounded-full border border-emerald-200 whitespace-nowrap">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-600" /> Completed
+                              </span>
+                            ) : job.status === 'failed' ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-rose-700 bg-rose-50 px-2 py-0.5 rounded-full border border-rose-200 whitespace-nowrap">
+                                <AlertTriangle className="w-3 h-3 text-rose-600" /> Failed
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-amber-700 bg-amber-50 px-2 py-0.5 rounded-full border border-amber-200 capitalize whitespace-nowrap">
+                                <Loader2 className="w-3 h-3 animate-spin text-amber-600" /> {job.status}
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </td>
-                      <td className="py-4 px-4">
+
+                      {/* Storage Expiry */}
+                      <td className="py-4 px-4 align-middle">
                         {isExpired ? (
-                          <span className="inline-flex items-center gap-1 text-[11px] text-slate-400">
-                            <Clock className="w-3 h-3" /> Expired (Auto-cleaned)
+                          <span className="inline-flex items-center gap-1.5 text-xs text-slate-400 whitespace-nowrap">
+                            <Clock className="w-3.5 h-3.5 text-slate-300 shrink-0" />
+                            <span>Expired</span>
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 text-[11px] text-blue-600 font-semibold">
-                            <Clock className="w-3 h-3" /> Active (1-hr window)
+                          <span className="inline-flex items-center gap-1.5 text-xs text-blue-600 font-medium whitespace-nowrap">
+                            <Clock className="w-3.5 h-3.5 text-blue-500 shrink-0" />
+                            <span>Active (1-hr)</span>
                           </span>
                         )}
                       </td>
-                      <td className="py-4 px-4 text-right">
+
+                      {/* Download Button */}
+                      <td className="py-4 px-5 align-middle text-right">
                         {!isExpired && job.status === 'completed' ? (
                           <a
                             id={`history-download-${job.id}`}
                             href={`/api/process/download/zip/${job.id}?token=${authToken}`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shadow-xs transition-all"
+                            className="inline-flex items-center justify-center gap-1.5 px-3.5 py-2 bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-white rounded-lg text-xs font-semibold shadow-xs hover:shadow-sm transition-all whitespace-nowrap"
                           >
                             <Download className="w-3.5 h-3.5" />
                             <span>Download ZIP</span>
                           </a>
                         ) : (
-                          <span className="text-[11px] text-slate-400 italic">Unavailable</span>
+                          <span className="text-xs text-slate-400 italic whitespace-nowrap">Unavailable</span>
                         )}
                       </td>
                     </tr>

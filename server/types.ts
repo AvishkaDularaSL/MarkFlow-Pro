@@ -133,7 +133,7 @@ export interface ActivityLog {
 }
 
 export interface DatabaseConfig {
-  type: 'cpanel_mysql' | 'mariadb' | 'postgresql' | 'internal_json';
+  type: 'supabase' | 'postgresql' | 'cpanel_mysql' | 'mariadb' | 'internal_json';
   host: string;
   port: number;
   database: string;
@@ -144,5 +144,7 @@ export interface DatabaseConfig {
   pool_size: number;
   status: 'connected' | 'idle' | 'error';
   last_tested?: string;
+  supabase_project_id?: string;
+  supabase_url?: string;
   cpanel_instructions?: string;
 }

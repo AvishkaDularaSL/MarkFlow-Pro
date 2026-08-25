@@ -21,7 +21,6 @@ import { AdminUsersPage } from './pages/admin/AdminUsersPage';
 import { AdminBusinessesPage } from './pages/admin/AdminBusinessesPage';
 import { AdminJobsPage } from './pages/admin/AdminJobsPage';
 import { AdminSettingsPage } from './pages/admin/AdminSettingsPage';
-import { AdminDatabasePage } from './pages/admin/AdminDatabasePage';
 import { AdminLogsPage } from './pages/admin/AdminLogsPage';
 
 import { Loader2 } from 'lucide-react';
@@ -96,8 +95,6 @@ const AppContent: React.FC = () => {
         return <AdminJobsPage />;
       case 'admin-settings':
         return <AdminSettingsPage />;
-      case 'admin-database':
-        return <AdminDatabasePage />;
       case 'admin-logs':
         return <AdminLogsPage />;
 

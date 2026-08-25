@@ -1,5 +1,4 @@
 import { Router, Response } from 'express';
-import net from 'net';
 import { db } from '../db';
 import { AuthService, AuthenticatedRequest } from '../services/AuthService';
 import { CleanupService } from '../services/CleanupService';
@@ -33,6 +32,130 @@ router.get('/users', (req: AuthenticatedRequest, res: Response) => {
   });
   res.json({ users });
 });
+
+// 2b. Create user by admin
+router.post('/users', (req: AuthenticatedRequest, res: Response) => {
+  const { name, email, password, role } = req.body;
+
+  if (!name || !email || !password) {
+    return res.status(400).json({ error: 'Name, email, and password are required.' });
+  }
+
+  const cleanEmail = String(email).trim().toLowerCase();
+  const existing = db.getUserByEmail(cleanEmail);
+  if (existing) {
+    return res.status(400).json({ error: 'A user with this email address already exists.' });
+  }
+
+  const hashedPassword = AuthService.hashPassword(String(password));
+  const userRole = role === 'admin' ? 'admin' : 'user';
+
+  const user = db.createUser({
+    name: String(name).trim(),
+    email: cleanEmail,
+    password: hashedPassword,
+    role: userRole,
+    status: 'active',
+  });
+
+  db.logActivity({
+    user_id: req.user!.id,
+    user_email: req.user!.email,
+    action: 'USER_CREATED_BY_ADMIN',
+    metadata: { createdUserId: user.id, email: user.email, role: user.role },
+  });
+
+  res.status(201).json({
+    message: 'User created successfully.',
+    user: {
+      id: user.id,
+      name: user.name,
+      email: user.email,
+      role: user.role,
+      status: user.status,
+      created_at: user.created_at,
+    },
+  });
+});
+
+// 2c. Update user details by admin (PUT & PATCH)
+const handleUpdateUser = (req: AuthenticatedRequest, res: Response) => {
+  const targetId = req.params.id;
+  const { name, email, password, role, status } = req.body;
+
+  const existingUser = db.getUserById(targetId);
+  if (!existingUser) {
+    return res.status(404).json({ error: 'User not found.' });
+  }
+
+  // Prevent self-demotion or self-deactivation
+  if (targetId === req.user!.id) {
+    if (role && role !== 'admin') {
+      return res.status(400).json({ error: 'You cannot revoke your own administrator role.' });
+    }
+    if (status && status !== 'active') {
+      return res.status(400).json({ error: 'You cannot deactivate your own administrative account.' });
+    }
+  }
+
+  const updates: any = {};
+  if (name && typeof name === 'string' && name.trim()) {
+    updates.name = name.trim();
+  }
+
+  if (email && typeof email === 'string' && email.trim()) {
+    const cleanEmail = email.trim().toLowerCase();
+    if (cleanEmail !== existingUser.email.toLowerCase()) {
+      const emailOccupied = db.getUserByEmail(cleanEmail);
+      if (emailOccupied && emailOccupied.id !== targetId) {
+        return res.status(400).json({ error: 'This email is already in use by another user.' });
+      }
+      updates.email = cleanEmail;
+    }
+  }
+
+  if (password && typeof password === 'string' && password.trim().length > 0) {
+    updates.password = AuthService.hashPassword(password.trim());
+  }
+
+  if (role && (role === 'admin' || role === 'user')) {
+    updates.role = role;
+  }
+
+  if (status && (status === 'active' || status === 'deactivated')) {
+    updates.status = status;
+  }
+
+  const updated = db.updateUser(targetId, updates);
+  if (!updated) {
+    return res.status(404).json({ error: 'User not found.' });
+  }
+
+  db.logActivity({
+    user_id: req.user!.id,
+    user_email: req.user!.email,
+    action: 'USER_UPDATED_BY_ADMIN',
+    metadata: {
+      targetUserId: targetId,
+      updatedFields: Object.keys(updates).filter((k) => k !== 'password'),
+    },
+  });
+
+  res.json({
+    message: 'User updated successfully.',
+    user: {
+      id: updated.id,
+      name: updated.name,
+      email: updated.email,
+      role: updated.role,
+      status: updated.status,
+      created_at: updated.created_at,
+    },
+  });
+};
+
+router.put('/users/:id', handleUpdateUser);
+router.patch('/users/:id', handleUpdateUser);
 
 // 3. Update user status (active / deactivated)
 router.patch('/users/:id/status', (req: AuthenticatedRequest, res: Response) => {
@@ -119,6 +242,15 @@ router.get('/businesses', (req: AuthenticatedRequest, res: Response) => {
   res.json({ businesses });
 });
 
+router.delete('/businesses/:id', (req: AuthenticatedRequest, res: Response) => {
+  const targetId = req.params.id;
+  const success = db.deleteBusiness(targetId);
+  if (!success) {
+    return res.status(404).json({ error: 'Business not found.' });
+  }
+  res.json({ message: 'Business brand successfully deleted.' });
+});
+
 // 7. View all processing jobs
 router.get('/jobs', (req: AuthenticatedRequest, res: Response) => {
   const jobs = db.getAllProcessingJobs().map((j) => {
@@ -132,200 +264,69 @@ router.get('/jobs', (req: AuthenticatedRequest, res: Response) => {
   res.json({ jobs });
 });
 
+router.delete('/jobs/:id', (req: AuthenticatedRequest, res: Response) => {
+  const targetId = req.params.id;
+  const success = db.deleteProcessingJob(targetId);
+  if (!success) {
+    return res.status(404).json({ error: 'Processing job not found.' });
+  }
+  res.json({ message: 'Processing job deleted successfully.' });
+});
+
 // 8. System settings
 router.get('/settings', (req: AuthenticatedRequest, res: Response) => {
-  const settings = db.getSettings();
-  res.json({ settings });
+  const raw = db.getSettings();
+  const settings = {
+    session_expiry_minutes: parseInt(raw.session_expiry_minutes || '60', 10) || 60,
+    max_images_per_batch: parseInt(raw.max_images_per_batch || '100', 10) || 100,
+    max_image_size_mb: parseInt(raw.max_image_size_mb || '50', 10) || 50,
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    default_webp_quality: parseInt(raw.default_webp_quality || '80', 10) || 80,
+    auto_cleanup_interval_minutes: parseInt(raw.auto_cleanup_interval_minutes || '5', 10) || 5,
+  };
+  res.json({ settings, raw });
 });
 
 router.put('/settings', (req: AuthenticatedRequest, res: Response) => {
-  const { settings } = req.body as { settings: Record<string, string> };
+  const settingsPayload = (req.body && req.body.settings) ? req.body.settings : req.body;
 
-  if (settings && typeof settings === 'object') {
-    Object.entries(settings).forEach(([key, val]) => {
-      db.updateSetting(key, String(val));
+  if (settingsPayload && typeof settingsPayload === 'object') {
+    Object.entries(settingsPayload).forEach(([key, val]) => {
+      if (key !== 'raw' && key !== 'settings') {
+        if (Array.isArray(val)) {
+          db.updateSetting(key, JSON.stringify(val));
+        } else if (val !== undefined && val !== null) {
+          db.updateSetting(key, String(val));
+        }
+      }
     });
   }
+
+  const raw = db.getSettings();
+  const settings = {
+    session_expiry_minutes: parseInt(raw.session_expiry_minutes || '60', 10) || 60,
+    max_images_per_batch: parseInt(raw.max_images_per_batch || '100', 10) || 100,
+    max_image_size_mb: parseInt(raw.max_image_size_mb || '50', 10) || 50,
+    allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+    default_webp_quality: parseInt(raw.default_webp_quality || '80', 10) || 80,
+    auto_cleanup_interval_minutes: parseInt(raw.auto_cleanup_interval_minutes || '5', 10) || 5,
+  };
 
   db.logActivity({
     user_id: req.user!.id,
     user_email: req.user!.email,
     action: 'SYSTEM_SETTINGS_UPDATED',
-    metadata: { updatedKeys: Object.keys(settings || {}) },
+    metadata: { updatedKeys: Object.keys(settingsPayload || {}) },
   });
 
   res.json({
     message: 'System settings updated successfully.',
-    settings: db.getSettings(),
+    settings,
+    raw,
   });
 });
 
-// 9. Database configuration
-router.get('/database', (req: AuthenticatedRequest, res: Response) => {
-  const config = db.getDatabaseConfig();
-  res.json({ config });
-});
-
-router.get('/database/config', (req: AuthenticatedRequest, res: Response) => {
-  const config = db.getDatabaseConfig();
-  res.json({ config });
-});
-
-const handleSaveDatabaseConfig = async (req: AuthenticatedRequest, res: Response) => {
-  const { type, host, port, database, username, password, table_prefix, ssl, pool_size } = req.body;
-
-  const updates: any = {};
-  if (type) updates.type = type;
-  if (host) updates.host = host.trim();
-  if (port) updates.port = parseInt(port, 10);
-  if (database) updates.database = database.trim();
-  if (username) updates.username = username.trim();
-  if (table_prefix) updates.table_prefix = table_prefix.trim();
-  if (password && password !== '••••••••') updates.password = password;
-  if (ssl !== undefined) updates.ssl = Boolean(ssl);
-  if (pool_size) updates.pool_size = parseInt(pool_size, 10);
-
-  const updatedConfig = db.updateDatabaseConfig(updates);
-  await db.reconfigurePool(updates);
-
-  db.logActivity({
-    user_id: req.user!.id,
-    user_email: req.user!.email,
-    action: 'DATABASE_CONFIG_UPDATED',
-    metadata: { type: updates.type, host: updates.host, database: updates.database },
-  });
-
-  res.json({
-    message: 'MySQL Database configuration saved securely.',
-    config: updatedConfig,
-  });
-};
-
-router.put('/database', handleSaveDatabaseConfig);
-router.post('/database/config', handleSaveDatabaseConfig);
-router.put('/database/config', handleSaveDatabaseConfig);
-
-// 9b. Export cPanel MySQL / MariaDB Schema SQL file for phpMyAdmin
-router.get('/database/schema-export/mysql', (req: AuthenticatedRequest, res: Response) => {
-  const sql = db.generateCPanelMySQLSchema();
-  const filename = `cpanel_watermark_schema_${new Date().toISOString().split('T')[0]}.sql`;
-  res.setHeader('Content-Type', 'application/sql');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.send(sql);
-});
-
-// 9c. Download Database JSON Backup
-router.get('/database/backup', (req: AuthenticatedRequest, res: Response) => {
-  const dbData = (db as any).data;
-  const sanitized = {
-    ...dbData,
-    users: (dbData.users || []).map((u: any) => ({ ...u, password: '[PROTECTED]' })),
-    db_config: { ...(dbData.db_config || {}), password: '[PROTECTED]' },
-  };
-  const filename = `watermark_database_backup_${new Date().toISOString().split('T')[0]}.json`;
-  res.setHeader('Content-Type', 'application/json');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  res.send(JSON.stringify(sanitized, null, 2));
-});
-
-// 10. Test Database Connection (cPanel MySQL / MariaDB)
-router.post('/database/test', async (req: AuthenticatedRequest, res: Response) => {
-  const { host, port, database, username, password, ssl, table_prefix } = req.body;
-
-  const targetHost = host || db.getDatabaseConfig().host || 'localhost';
-  const targetPort = parseInt(port || db.getDatabaseConfig().port || 3306, 10);
-  const targetDatabase = database || db.getDatabaseConfig().database || 'watermark_db';
-
-  const startTime = Date.now();
-
-  // If testing with specific incoming credentials, reconfigure or test directly
-  if (host || port || database || username || password) {
-    const result = await db.reconfigurePool({
-      host: targetHost,
-      port: targetPort,
-      database: targetDatabase,
-      username: username || db.getDatabaseConfig().username,
-      password: password && password !== '••••••••' ? password : undefined,
-      ssl: ssl !== undefined ? Boolean(ssl) : undefined,
-      table_prefix: table_prefix || undefined,
-    });
-
-    if (result.success) {
-      return res.json({
-        success: true,
-        message: result.message,
-        latencyMs: result.latencyMs,
-        engine: 'cPanel MySQL / MariaDB (InnoDB)',
-        details: {
-          host: targetHost,
-          port: targetPort,
-          database: targetDatabase,
-          poolActive: true,
-        },
-      });
-    } else {
-      // If direct MySQL connection had an issue, test socket connectivity
-      try {
-        await new Promise((resolve, reject) => {
-          const socket = new net.Socket();
-          socket.setTimeout(3000);
-          socket.connect(targetPort, targetHost, () => {
-            socket.destroy();
-            resolve(true);
-          });
-          socket.on('error', (err) => {
-            socket.destroy();
-            reject(err);
-          });
-          socket.on('timeout', () => {
-            socket.destroy();
-            reject(new Error(`TCP connection to ${targetHost}:${targetPort} timed out after 3000ms`));
-          });
-        });
-
-        return res.json({
-          success: true,
-          message: `Port reachable. Reached ${targetHost}:${targetPort} in ${Date.now() - startTime}ms. Note: Verify MySQL credentials for database "${targetDatabase}".`,
-          latencyMs: Date.now() - startTime,
-          engine: 'cPanel MySQL / MariaDB',
-        });
-      } catch (netErr: any) {
-        return res.status(400).json({
-          success: false,
-          message: `MySQL Connection Failed: ${result.message}. Host check: ${netErr.message || 'Host unreachable'}.`,
-          latencyMs: Date.now() - startTime,
-          engine: 'cPanel MySQL / MariaDB',
-        });
-      }
-    }
-  }
-
-  // Standard pool test
-  const testResult = await db.testConnection();
-  if (testResult.success) {
-    res.json({
-      success: true,
-      message: testResult.message,
-      latencyMs: testResult.latencyMs,
-      engine: 'cPanel MySQL / MariaDB (InnoDB)',
-      details: {
-        host: targetHost,
-        port: targetPort,
-        database: targetDatabase,
-        poolActive: true,
-      },
-    });
-  } else {
-    res.status(400).json({
-      success: false,
-      message: testResult.message,
-      latencyMs: testResult.latencyMs,
-      engine: 'cPanel MySQL / MariaDB',
-    });
-  }
-});
-
-// 11. Run cleanup manually
+// 9. Manual cleanup
 router.post('/cleanup', (req: AuthenticatedRequest, res: Response) => {
   const result = CleanupService.runCleanup();
   res.json({
@@ -334,7 +335,7 @@ router.post('/cleanup', (req: AuthenticatedRequest, res: Response) => {
   });
 });
 
-// 12. View activity logs
+// 10. View activity logs
 router.get('/logs', (req: AuthenticatedRequest, res: Response) => {
   const logs = db.getActivityLogs(100);
   res.json({ logs });

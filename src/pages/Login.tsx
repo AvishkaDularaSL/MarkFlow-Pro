@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { api } from '../lib/api';
-import { Layers, Lock, Mail, ArrowRight, ShieldCheck, UserCheck, Loader2 } from 'lucide-react';
+import { Layers, Lock, Mail, ArrowRight, Loader2 } from 'lucide-react';
 
 interface LoginProps {
   onNavigate: (view: string) => void;
@@ -40,16 +40,6 @@ export const Login: React.FC<LoginProps> = ({ onNavigate }) => {
       error('Sign In Failed', err.message || 'Invalid email or password.');
     } finally {
       setIsLoading(false);
-    }
-  };
-
-  const fillCredentials = (type: 'admin' | 'user') => {
-    if (type === 'admin') {
-      setEmail('admin@watermark.io');
-      setPassword('Admin@123456');
-    } else {
-      setEmail('demo@watermark.io');
-      setPassword('User@123456');
     }
   };
 
@@ -139,33 +129,6 @@ export const Login: React.FC<LoginProps> = ({ onNavigate }) => {
               )}
             </button>
           </form>
-
-          {/* One-click Demo Accounts */}
-          <div className="mt-6 pt-5 border-t border-slate-800/80">
-            <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider text-center mb-3">
-              One-Click Demo Access
-            </p>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                id="demo-user-btn"
-                onClick={() => fillCredentials('user')}
-                className="flex items-center justify-center gap-1.5 py-2 px-3 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 rounded-xl text-xs font-semibold text-emerald-400 hover:text-emerald-300 transition-colors"
-              >
-                <UserCheck className="w-3.5 h-3.5" />
-                <span>Demo User</span>
-              </button>
-              <button
-                type="button"
-                id="demo-admin-btn"
-                onClick={() => fillCredentials('admin')}
-                className="flex items-center justify-center gap-1.5 py-2 px-3 bg-slate-800/80 hover:bg-slate-800 border border-slate-700 rounded-xl text-xs font-semibold text-amber-400 hover:text-amber-300 transition-colors"
-              >
-                <ShieldCheck className="w-3.5 h-3.5" />
-                <span>Demo Admin</span>
-              </button>
-            </div>
-          </div>
 
           <div className="mt-6 text-center">
             <p className="text-xs text-slate-400">

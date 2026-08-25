@@ -7,7 +7,6 @@ import {
   History,
   Settings,
   Users,
-  Database,
   FileText,
   Sliders,
   Shield,
@@ -49,7 +48,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
     { id: 'admin-businesses', label: 'All Businesses', icon: <Briefcase className="w-4 h-4" /> },
     { id: 'admin-jobs', label: 'Processing Jobs', icon: <Sliders className="w-4 h-4" /> },
     { id: 'admin-settings', label: 'System Settings', icon: <Settings className="w-4 h-4" /> },
-    { id: 'admin-database', label: 'Database Config', icon: <Database className="w-4 h-4" /> },
     { id: 'admin-logs', label: 'Audit Logs', icon: <FileText className="w-4 h-4" /> },
   ];
 

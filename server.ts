@@ -27,40 +27,22 @@ async function startServer() {
     next();
   });
 
-  // API Health & Database Diagnostic Routes
-  app.get('/api/health', async (req, res) => {
-    const dbTest = await db.testConnection();
+  // API Health Routes
+  app.get('/api/health', (req, res) => {
     res.json({
       status: 'ok',
-      service: 'MarkFlow Pro SaaS Engine',
-      database: {
-        engine: 'MySQL / MariaDB',
-        connected: dbTest.success,
-        host: dbTest.host,
-        port: dbTest.port,
-        name: dbTest.database,
-        latencyMs: dbTest.latencyMs,
-        message: dbTest.message,
-      },
+      service: 'WatermarkPro SaaS Engine',
+      storage: 'Self-Contained Local Runtime Engine',
       timestamp: new Date().toISOString(),
     });
   });
 
-  app.get('/api/health/db', async (req, res) => {
-    const dbTest = await db.testConnection();
-    if (dbTest.success) {
-      res.json({
-        status: 'connected',
-        ...dbTest,
-        timestamp: new Date().toISOString(),
-      });
-    } else {
-      res.status(503).json({
-        status: 'disconnected',
-        ...dbTest,
-        timestamp: new Date().toISOString(),
-      });
-    }
+  app.get('/api/health/db', (req, res) => {
+    res.json({
+      status: 'operational',
+      engine: 'Self-Contained Local Runtime Engine',
+      timestamp: new Date().toISOString(),
+    });
   });
 
   app.use('/api/auth', authRoutes);

@@ -1,114 +1,68 @@
 {
   "users": [
     {
-      "id": "user_admin_root",
-      "name": "System Administrator",
-      "email": "admin@watermark.io",
-      "password": "$2b$10$5oOCKck77XMbcPQrKlyB0..N6viiJ5mIejeJhxyNjLojUZtrABhSS",
+      "id": "user_admin_primary",
+      "name": "Dulara Avishka",
+      "email": "dularaavishka890@gmail.com",
+      "password": "$2a$10$9G.j4r14cZ2f3Dovk6gHk.d0124Y17RzU1XU/M0x3gT2yvWk6912y",
       "role": "admin",
       "status": "active",
-      "created_at": "2026-08-24T16:11:12.253Z",
-      "updated_at": "2026-08-24T16:11:12.253Z"
-    },
-    {
-      "id": "user_demo_client",
-      "name": "Alex Vance (Studio Pro)",
-      "email": "demo@watermark.io",
-      "password": "$2b$10$cnvWKDhLqK3FAvJM/nCTVON/aYPygteLk1IyNcH3rbyKsAtt.uu8m",
-      "role": "user",
-      "status": "active",
-      "created_at": "2026-08-24T16:11:12.342Z",
-      "updated_at": "2026-08-24T16:11:12.342Z"
+      "created_at": "2026-08-25T00:48:00.000Z",
+      "updated_at": "2026-08-25T00:48:00.000Z"
     }
   ],
   "businesses": [],
-  "processing_sessions": [
-    {
-      "id": "sess_397f8362-7571-48d6-bdaa-8944b982f732",
-      "user_id": "user_admin_root",
-      "created_at": "2026-08-24T16:11:56.590Z",
-      "updated_at": "2026-08-24T16:11:56.895Z",
-      "expires_at": "2026-08-24T17:11:56.895Z"
-    },
-    {
-      "id": "sess_22261d73-fd5c-415a-a380-251569548541",
-      "user_id": "user_demo_client",
-      "created_at": "2026-08-24T16:22:49.775Z",
-      "updated_at": "2026-08-24T16:22:53.336Z",
-      "expires_at": "2026-08-24T17:22:53.336Z"
-    }
-  ],
+  "processing_sessions": [],
   "uploaded_images": [],
   "processing_jobs": [],
   "processed_images": [],
   "system_settings": [
     {
-      "id": "1",
-      "key": "TEMP_FILE_LIFETIME",
-      "value": "3600",
-      "description": "Maximum lifetime of temporary files in seconds (1 hour)",
-      "updated_at": "2026-08-24T16:11:12.151Z"
+      "id": "setting_1",
+      "key": "session_expiry_minutes",
+      "value": "60",
+      "description": "Temporary upload session lifetime in minutes",
+      "updated_at": "2026-08-25T00:48:00.000Z"
     },
     {
-      "id": "2",
-      "key": "MAX_UPLOAD_SIZE",
-      "value": "52428800",
-      "description": "Maximum upload batch size in bytes (50MB)",
-      "updated_at": "2026-08-24T16:11:12.151Z"
+      "id": "setting_2",
+      "key": "max_images_per_batch",
+      "value": "100",
+      "description": "Maximum number of images allowed per batch conversion",
+      "updated_at": "2026-08-25T00:48:00.000Z"
     },
     {
-      "id": "3",
-      "key": "DEFAULT_WEBP_QUALITY",
+      "id": "setting_3",
+      "key": "max_image_size_mb",
+      "value": "50",
+      "description": "Maximum single image file size in Megabytes",
+      "updated_at": "2026-08-25T00:48:00.000Z"
+    },
+    {
+      "id": "setting_4",
+      "key": "default_webp_quality",
       "value": "80",
-      "description": "Default WebP compression quality (1-100)",
-      "updated_at": "2026-08-24T16:11:12.151Z"
+      "description": "Default quality parameter for WebP conversion (1-100)",
+      "updated_at": "2026-08-25T00:48:00.000Z"
     },
     {
-      "id": "4",
-      "key": "AUTO_CLEANUP_INTERVAL",
-      "value": "300",
-      "description": "Interval in seconds between automated cleanup cycles (5 mins)",
-      "updated_at": "2026-08-24T16:11:12.151Z"
-    },
-    {
-      "id": "5",
-      "key": "APP_NAME",
-      "value": "MarkFlow Pro SaaS",
-      "description": "System branding and portal title",
-      "updated_at": "2026-08-24T16:11:12.151Z"
+      "id": "setting_5",
+      "key": "auto_cleanup_interval_minutes",
+      "value": "5",
+      "description": "Frequency of automated temporary storage cleanup worker",
+      "updated_at": "2026-08-25T00:48:00.000Z"
     }
   ],
   "activity_logs": [
     {
-      "user_id": "user_demo_client",
-      "user_email": "demo@watermark.io",
-      "action": "USER_LOGIN",
+      "id": "log_init",
+      "action": "SYSTEM_INITIALIZED",
+      "user_email": "dularaavishka890@gmail.com",
       "metadata": {
-        "role": "user"
+        "admin": "dularaavishka890@gmail.com",
+        "timestamp": "2026-08-25T00:48:00.000Z"
       },
-      "id": "log_e719fba5-421e-4f6f-a26a-8e3f682a6f72",
-      "created_at": "2026-08-24T16:22:49.119Z"
-    },
-    {
-      "user_id": "user_admin_root",
-      "user_email": "admin@watermark.io",
-      "action": "USER_LOGOUT",
-      "id": "log_ced33651-1d34-4179-8b78-af83fc0b7c49",
-      "created_at": "2026-08-24T16:22:44.405Z"
+      "created_at": "2026-08-25T00:48:00.000Z"
     }
-  ],
-  "db_config": {
-    "type": "cpanel_mysql",
-    "host": "localhost",
-    "port": 3306,
-    "database": "foreyhtb_image",
-    "username": "foreyhtb_image",
-    "password": "M)d(7x7FT*UzoC8j",
-    "table_prefix": "wm_",
-    "ssl": false,
-    "pool_size": 10,
-    "status": "connected",
-    "last_tested": "2026-08-24T16:25:00.000Z",
-    "cpanel_instructions": "1. Create database & user in cPanel MySQL Wizard -> 2. Import schema.sql in phpMyAdmin -> 3. Set DB_* env variables in cPanel Node.js App."
-  }
+  ]
 }

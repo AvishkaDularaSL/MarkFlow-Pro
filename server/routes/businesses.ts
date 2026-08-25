@@ -55,13 +55,19 @@ router.get('/:id', AuthService.requireAuth, (req: AuthenticatedRequest, res: Res
 router.post(
   '/',
   AuthService.requireAuth,
-  logoUpload.single('logo'),
+  (req, res, next) => {
+    logoUpload.single('logo')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message || 'Invalid logo upload.' });
+      }
+      next();
+    });
+  },
   (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user!.id;
     const { name, description } = req.body;
 
     if (!name || typeof name !== 'string' || !name.trim()) {
-      // Clean up uploaded file if name is missing
       if (req.file) {
         StorageService.safeUnlink(req.file.path);
       }
@@ -75,7 +81,7 @@ router.post(
     const business = db.createBusiness({
       user_id: userId,
       name: name.trim(),
-      description: description ? description.trim() : '',
+      description: description ? String(description).trim() : '',
       logo_path: req.file.path,
       logo_original_name: req.file.originalname,
       logo_mime: req.file.mimetype,
@@ -92,7 +98,14 @@ router.post(
 router.put(
   '/:id',
   AuthService.requireAuth,
-  logoUpload.single('logo'),
+  (req, res, next) => {
+    logoUpload.single('logo')(req, res, (err) => {
+      if (err) {
+        return res.status(400).json({ error: err.message || 'Invalid logo upload.' });
+      }
+      next();
+    });
+  },
   (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user!.id;
     const bizId = req.params.id;
@@ -104,13 +117,15 @@ router.put(
       return res.status(404).json({ error: 'Business not found.' });
     }
 
-    const updates: any = {};
-    if (name && typeof name === 'string') {
-      updates.name = name.trim();
+    if (!name || typeof name !== 'string' || !name.trim()) {
+      if (req.file) StorageService.safeUnlink(req.file.path);
+      return res.status(400).json({ error: 'Business name is required.' });
     }
-    if (description !== undefined) {
-      updates.description = description.trim();
-    }
+
+    const updates: Partial<any> = {
+      name: name.trim(),
+      description: description !== undefined ? String(description).trim() : existing.description,
+    };
 
     if (req.file) {
       // Remove old logo file if exists
@@ -122,7 +137,7 @@ router.put(
       updates.logo_mime = req.file.mimetype;
     }
 
-    const updated = db.updateBusiness(bizId, existing.user_id, updates);
+    const updated = db.updateBusiness(bizId, updates);
     res.json({
       message: 'Business updated successfully',
       business: updated,

@@ -63,15 +63,15 @@ export const AdminJobsPage: React.FC = () => {
 
       <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-xs">
         <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
+          <table className="w-full text-left text-xs border-collapse">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-slate-600">
-                <th className="py-3 px-4 font-bold">Job ID &amp; User</th>
-                <th className="py-3 px-4 font-bold">Business Brand</th>
-                <th className="py-3 px-4 font-bold">Rendered Images</th>
-                <th className="py-3 px-4 font-bold">Format &amp; Quality</th>
-                <th className="py-3 px-4 font-bold">Status</th>
-                <th className="py-3 px-4 font-bold text-right">ZIP Package</th>
+              <tr className="border-b border-slate-200 bg-slate-50/80 text-slate-500 uppercase tracking-wider text-[11px] font-semibold select-none">
+                <th className="py-3.5 px-5 whitespace-nowrap min-w-[200px]">Job &amp; User</th>
+                <th className="py-3.5 px-4 whitespace-nowrap min-w-[160px]">Brand</th>
+                <th className="py-3.5 px-4 whitespace-nowrap text-center min-w-[100px]">Images</th>
+                <th className="py-3.5 px-4 whitespace-nowrap min-w-[150px]">Format &amp; Quality</th>
+                <th className="py-3.5 px-4 whitespace-nowrap min-w-[120px]">Status</th>
+                <th className="py-3.5 px-5 whitespace-nowrap text-right min-w-[110px]">Package</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-100">
@@ -92,43 +92,55 @@ export const AdminJobsPage: React.FC = () => {
                 filtered.map((j) => {
                   const isExpired = new Date(j.expires_at).getTime() < Date.now();
                   return (
-                    <tr key={j.id} className="hover:bg-slate-50/70 transition-colors">
-                      <td className="py-3 px-4">
-                        <div className="font-mono text-slate-800 font-semibold text-xs">{j.id}</div>
-                        <div className="text-slate-400 text-[11px] font-mono mt-0.5">{j.user_email || j.user_id}</div>
+                    <tr key={j.id} className="hover:bg-slate-50/80 transition-colors">
+                      <td className="py-4 px-5 align-middle">
+                        <div className="font-mono text-slate-900 font-semibold text-xs truncate max-w-[200px]" title={j.id}>
+                          #{j.id.replace(/^job_/, '').slice(0, 12)}...
+                        </div>
+                        <div className="text-slate-400 text-[11px] font-medium mt-0.5 truncate max-w-[200px]" title={j.user_email || j.user_id}>
+                          {j.user_email || j.user_id}
+                        </div>
                       </td>
-                      <td className="py-3 px-4 font-bold text-slate-900">{j.business_name}</td>
-                      <td className="py-3 px-4 text-slate-700 font-medium">
-                        <span className="font-bold text-slate-900">{j.completed_images}</span> /{' '}
-                        {j.total_images}
+                      <td className="py-4 px-4 align-middle">
+                        <div className="font-semibold text-slate-900 text-sm truncate max-w-[160px]">
+                          {j.business_name}
+                        </div>
                       </td>
-                      <td className="py-3 px-4 text-slate-600">
-                        <span className="px-2 py-0.5 rounded bg-slate-100 border border-slate-200 text-[11px] font-mono uppercase">
+                      <td className="py-4 px-4 align-middle text-center">
+                        <div className="inline-flex flex-col items-center">
+                          <span className="font-bold text-slate-900 font-mono text-xs">
+                            {j.completed_images} / {j.total_images}
+                          </span>
+                          <span className="text-[10px] text-slate-400 font-medium">processed</span>
+                        </div>
+                      </td>
+                      <td className="py-4 px-4 align-middle">
+                        <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-slate-100 text-slate-700 border border-slate-200 text-[11px] font-mono uppercase font-medium whitespace-nowrap">
                           {j.output_format || 'webp'} • {j.quality}%
                         </span>
                       </td>
-                      <td className="py-3 px-4">
+                      <td className="py-4 px-4 align-middle">
                         {isExpired ? (
-                          <span className="px-2 py-0.5 rounded bg-slate-100 text-slate-500 border border-slate-200 text-[10px] font-bold uppercase">
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-500 border border-slate-200 text-[10px] font-bold uppercase whitespace-nowrap">
                             Expired
                           </span>
                         ) : (
-                          <span className="px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold uppercase">
+                          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200 text-[10px] font-bold uppercase whitespace-nowrap">
                             Active
                           </span>
                         )}
                       </td>
-                      <td className="py-3 px-4 text-right">
+                      <td className="py-4 px-5 align-middle text-right">
                         {!isExpired && j.status === 'completed' ? (
                           <a
                             href={`/api/process/download/zip/${j.id}?token=${authToken}`}
-                            className="inline-flex items-center gap-1.5 px-3 py-1 bg-purple-50 hover:bg-purple-100 text-purple-700 border border-purple-200 rounded-lg text-xs font-bold transition-all shadow-xs"
+                            className="inline-flex items-center justify-center gap-1.5 px-3 py-1.5 bg-purple-50 hover:bg-purple-100 active:bg-purple-200 text-purple-700 border border-purple-200 rounded-lg text-xs font-bold transition-all shadow-2xs whitespace-nowrap"
                           >
                             <Download className="w-3.5 h-3.5" />
                             <span>ZIP</span>
                           </a>
                         ) : (
-                          <span className="text-slate-400 text-xs">Purged</span>
+                          <span className="text-slate-400 text-xs italic whitespace-nowrap">Purged</span>
                         )}
                       </td>
                     </tr>

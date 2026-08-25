@@ -20,9 +20,16 @@ export const AdminSettingsPage: React.FC = () => {
   useEffect(() => {
     const fetchSettings = async () => {
       try {
-        const res = await api.get<{ settings: SystemSettings }>('/api/admin/settings');
+        const res = await api.get<{ settings: any }>('/api/admin/settings');
         if (res.settings) {
-          setSettings(res.settings);
+          setSettings({
+            session_expiry_minutes: Number(res.settings.session_expiry_minutes) || 60,
+            max_images_per_batch: Number(res.settings.max_images_per_batch) || 100,
+            max_image_size_mb: Number(res.settings.max_image_size_mb) || 50,
+            allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+            default_webp_quality: Number(res.settings.default_webp_quality) || 80,
+            auto_cleanup_interval_minutes: Number(res.settings.auto_cleanup_interval_minutes) || 5,
+          });
         }
       } catch (err: any) {
         error('Failed to load settings', err.message);
@@ -38,8 +45,18 @@ export const AdminSettingsPage: React.FC = () => {
     e.preventDefault();
     setIsSaving(true);
     try {
-      await api.put('/api/admin/settings', settings);
-      success('System Settings Saved', 'Application configuration has been updated.');
+      const res = await api.put<{ settings: any; message?: string }>('/api/admin/settings', { settings });
+      if (res.settings) {
+        setSettings({
+          session_expiry_minutes: Number(res.settings.session_expiry_minutes) || 60,
+          max_images_per_batch: Number(res.settings.max_images_per_batch) || 100,
+          max_image_size_mb: Number(res.settings.max_image_size_mb) || 50,
+          allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
+          default_webp_quality: Number(res.settings.default_webp_quality) || 80,
+          auto_cleanup_interval_minutes: Number(res.settings.auto_cleanup_interval_minutes) || 5,
+        });
+      }
+      success('System Settings Saved', 'Application configuration has been updated successfully.');
     } catch (err: any) {
       error('Failed to save settings', err.message);
     } finally {
