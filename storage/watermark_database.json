@@ -4,11 +4,11 @@
       "id": "user_admin_primary",
       "name": "Dulara Avishka",
       "email": "dularaavishka890@gmail.com",
-      "password": "$2a$10$9G.j4r14cZ2f3Dovk6gHk.d0124Y17RzU1XU/M0x3gT2yvWk6912y",
+      "password": "$2b$10$yRHQ0UFX3yEXKXPJDwusWu/HOzXzBpCMcQAoNnOdWhJp4VadMmdWq",
       "role": "admin",
       "status": "active",
       "created_at": "2026-08-25T00:48:00.000Z",
-      "updated_at": "2026-08-25T00:48:00.000Z"
+      "updated_at": "2026-08-25T08:45:00.000Z"
     }
   ],
   "businesses": [],
@@ -21,48 +21,50 @@
       "id": "setting_1",
       "key": "session_expiry_minutes",
       "value": "60",
-      "description": "Temporary upload session lifetime in minutes",
-      "updated_at": "2026-08-25T00:48:00.000Z"
+      "description": "Lifetime of temporary uploaded files and download batches in minutes",
+      "updated_at": "2026-08-25T08:45:00.000Z"
     },
     {
       "id": "setting_2",
       "key": "max_images_per_batch",
       "value": "100",
       "description": "Maximum number of images allowed per batch conversion",
-      "updated_at": "2026-08-25T00:48:00.000Z"
+      "updated_at": "2026-08-25T08:45:00.000Z"
     },
     {
       "id": "setting_3",
       "key": "max_image_size_mb",
       "value": "50",
       "description": "Maximum single image file size in Megabytes",
-      "updated_at": "2026-08-25T00:48:00.000Z"
+      "updated_at": "2026-08-25T08:45:00.000Z"
     },
     {
       "id": "setting_4",
       "key": "default_webp_quality",
       "value": "80",
       "description": "Default quality parameter for WebP conversion (1-100)",
-      "updated_at": "2026-08-25T00:48:00.000Z"
+      "updated_at": "2026-08-25T08:45:00.000Z"
     },
     {
       "id": "setting_5",
       "key": "auto_cleanup_interval_minutes",
       "value": "5",
       "description": "Frequency of automated temporary storage cleanup worker",
-      "updated_at": "2026-08-25T00:48:00.000Z"
+      "updated_at": "2026-08-25T08:45:00.000Z"
     }
   ],
   "activity_logs": [
     {
-      "id": "log_init",
-      "action": "SYSTEM_INITIALIZED",
+      "id": "log_init_clean",
+      "action": "SYSTEM_DATA_PURGED_AND_RESET",
+      "user_id": "user_admin_primary",
       "user_email": "dularaavishka890@gmail.com",
       "metadata": {
-        "admin": "dularaavishka890@gmail.com",
-        "timestamp": "2026-08-25T00:48:00.000Z"
+        "timestamp": "2026-08-25T08:45:00.000Z",
+        "preservedAdmin": "dularaavishka890@gmail.com",
+        "defaultSettingsRestored": true
       },
-      "created_at": "2026-08-25T00:48:00.000Z"
+      "created_at": "2026-08-25T08:45:00.000Z"
     }
   ]
 }

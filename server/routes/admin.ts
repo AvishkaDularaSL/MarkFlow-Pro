@@ -11,7 +11,12 @@ router.use(AuthService.requireAdmin);
 // 1. Dashboard statistics
 router.get('/stats', (req: AuthenticatedRequest, res: Response) => {
   const stats = db.getSystemStats();
-  res.json({ stats });
+  const formatted = {
+    ...stats,
+    totalImagesProcessed: stats.totalProcessedImages,
+    storageUsageBytes: stats.storageBytes,
+  };
+  res.json({ stats: formatted, ...formatted });
 });
 
 // 2. User management - list users
@@ -335,7 +340,17 @@ router.post('/cleanup', (req: AuthenticatedRequest, res: Response) => {
   });
 });
 
-// 10. View activity logs
+// 10. Clean all data (Factory Reset - preserving admin dularaavishka890@gmail.com)
+router.post('/clean-all-data', (req: AuthenticatedRequest, res: Response) => {
+  const adminEmail = req.user?.email || 'dularaavishka890@gmail.com';
+  const result = db.wipeAllDataExceptAdmin(adminEmail);
+  res.json({
+    message: 'All application data wiped and default settings restored.',
+    result,
+  });
+});
+
+// 11. View activity logs
 router.get('/logs', (req: AuthenticatedRequest, res: Response) => {
   const logs = db.getActivityLogs(100);
   res.json({ logs });

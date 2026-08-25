@@ -31,11 +31,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
   const fetchAdminData = async () => {
     try {
       const [statsRes, logsRes] = await Promise.all([
-        api.get<AdminStats>('/api/admin/stats'),
-        api.get<{ logs: AuditLog[] }>('/api/admin/logs?limit=8'),
+        api.get<any>('/api/admin/stats'),
+        api.get<{ logs: any[] }>('/api/admin/logs?limit=8'),
       ]);
-      setStats(statsRes);
-      setRecentLogs(logsRes.logs || []);
+      const rawStats = statsRes?.stats || statsRes || {};
+      setStats({
+        totalUsers: Number(rawStats.totalUsers) || 0,
+        totalBusinesses: Number(rawStats.totalBusinesses) || 0,
+        totalJobs: Number(rawStats.totalJobs) || 0,
+        totalImagesProcessed: Number(rawStats.totalImagesProcessed ?? rawStats.totalProcessedImages) || 0,
+        activeSessions: Number(rawStats.activeSessions) || 0,
+        databaseType: rawStats.databaseType || 'Self-Contained Local Runtime Engine',
+        databaseSizeBytes: Number(rawStats.databaseSizeBytes) || 0,
+        storageUsageBytes: Number(rawStats.storageUsageBytes ?? rawStats.storageBytes) || 0,
+      });
+      setRecentLogs(logsRes?.logs || []);
     } catch (err: any) {
       error('Admin Portal Error', err.message);
     } finally {
@@ -234,7 +244,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                     <div>
                       <span className="font-bold text-slate-900">{log.action}</span>
                       <span className="text-slate-500 ml-1.5 font-mono text-[11px]">
-                        {log.details ? JSON.stringify(log.details) : ''}
+                        {log.details ? JSON.stringify(log.details) : (log as any).metadata ? JSON.stringify((log as any).metadata) : ''}
                       </span>
                     </div>
                   </div>

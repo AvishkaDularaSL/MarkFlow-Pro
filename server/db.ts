@@ -727,6 +727,100 @@ class AppDatabase {
       jobsCleaned: expiredJobs.length,
     };
   }
+
+  /**
+   * Complete data purge:
+   * Removes all businesses, uploaded images, jobs, processed images,
+   * non-admin users, and reset settings to default while keeping the specified admin.
+   */
+  wipeAllDataExceptAdmin(adminEmail: string = 'dularaavishka890@gmail.com') {
+    // 1. Clean physical disk files
+    const cleanDirectoryFiles = (dirPath: string) => {
+      if (fs.existsSync(dirPath)) {
+        try {
+          const files = fs.readdirSync(dirPath);
+          for (const file of files) {
+            const curPath = path.join(dirPath, file);
+            if (fs.lstatSync(curPath).isDirectory()) {
+              cleanDirectoryFiles(curPath);
+              try { fs.rmdirSync(curPath); } catch (_) {}
+            } else {
+              try { fs.unlinkSync(curPath); } catch (_) {}
+            }
+          }
+        } catch (err) {
+          console.error(`Error cleaning directory ${dirPath}:`, err);
+        }
+      }
+    };
+
+    cleanDirectoryFiles(LOGOS_DIR);
+    cleanDirectoryFiles(TEMP_DIR);
+    cleanDirectoryFiles(ZIPS_DIR);
+
+    // 2. Preserve specified admin user
+    const preservedUser = this.data.users.find(
+      (u) => u.email.toLowerCase() === adminEmail.toLowerCase()
+    );
+
+    let finalUsers: User[] = [];
+    if (preservedUser) {
+      finalUsers = [
+        {
+          ...preservedUser,
+          role: 'admin',
+          status: 'active',
+          updated_at: new Date().toISOString(),
+        },
+      ];
+    } else {
+      const salt = bcrypt.genSaltSync(10);
+      const hashedPassword = bcrypt.hashSync('Dulara@2001', salt);
+      finalUsers = [
+        {
+          id: 'user_admin_primary',
+          name: 'Dulara Avishka',
+          email: adminEmail,
+          password: hashedPassword,
+          role: 'admin',
+          status: 'active',
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        },
+      ];
+    }
+
+    // 3. Reset database records
+    this.data.users = finalUsers;
+    this.data.businesses = [];
+    this.data.processing_sessions = [];
+    this.data.uploaded_images = [];
+    this.data.processing_jobs = [];
+    this.data.processed_images = [];
+    this.data.system_settings = this.getDefaultSystemSettings();
+    this.data.activity_logs = [
+      {
+        id: `log_${Date.now()}`,
+        action: 'ALL_DATA_CLEANED_FACTORY_RESET',
+        user_id: finalUsers[0]?.id,
+        user_email: adminEmail,
+        metadata: {
+          timestamp: new Date().toISOString(),
+          preservedAdmin: adminEmail,
+          defaultSettingsRestored: true,
+        },
+        created_at: new Date().toISOString(),
+      },
+    ];
+
+    this.saveDatabase();
+
+    return {
+      success: true,
+      preservedAdmin: adminEmail,
+      message: 'All application data has been wiped and default settings restored.',
+    };
+  }
 }
 
 export const db = new AppDatabase();
