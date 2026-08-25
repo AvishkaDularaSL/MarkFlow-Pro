@@ -350,7 +350,31 @@ router.post('/clean-all-data', (req: AuthenticatedRequest, res: Response) => {
   });
 });
 
-// 11. View activity logs
+// 11. Supabase Cloud Database Status & Configuration
+router.get('/supabase/status', async (req: AuthenticatedRequest, res: Response) => {
+  const { testSupabaseConnection, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL, SUPABASE_KEY, SUPABASE_SQL_SCHEMA, SUPABASE_RLS_FIX_SQL } = await import('../supabase');
+  const status = await testSupabaseConnection();
+  res.json({
+    status,
+    projectName: SUPABASE_PROJECT_NAME,
+    projectId: SUPABASE_PROJECT_ID,
+    url: SUPABASE_URL,
+    publishableKeyMasked: `${SUPABASE_KEY.slice(0, 10)}...${SUPABASE_KEY.slice(-6)}`,
+    sqlSchema: SUPABASE_SQL_SCHEMA,
+    rlsFixSql: SUPABASE_RLS_FIX_SQL,
+  });
+});
+
+// 12. Trigger manual sync to Supabase
+router.post('/supabase/sync', async (req: AuthenticatedRequest, res: Response) => {
+  const result = await db.syncToSupabase();
+  res.json({
+    message: result.success ? 'Supabase cloud database synchronization completed successfully.' : 'Supabase sync completed with warning.',
+    result,
+  });
+});
+
+// 13. View activity logs
 router.get('/logs', (req: AuthenticatedRequest, res: Response) => {
   const logs = db.getActivityLogs(100);
   res.json({ logs });

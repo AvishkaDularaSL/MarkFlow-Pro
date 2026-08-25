@@ -157,6 +157,11 @@ export interface AdminStats {
   databaseType: string;
   databaseSizeBytes: number;
   storageUsageBytes: number;
+  supabaseConnected?: boolean;
+  supabaseRlsBlocked?: boolean;
+  supabaseProjectName?: string;
+  supabaseProjectId?: string;
+  supabaseUrl?: string;
 }
 
 export interface AuditLog {

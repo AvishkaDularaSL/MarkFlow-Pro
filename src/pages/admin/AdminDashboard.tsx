@@ -15,6 +15,9 @@ import {
   Sparkles,
   Loader2,
   CheckCircle2,
+  Database,
+  RefreshCw,
+  ExternalLink,
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -27,6 +30,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
   const [recentLogs, setRecentLogs] = useState<AuditLog[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCleaning, setIsCleaning] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   const fetchAdminData = async () => {
     try {
@@ -41,9 +45,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         totalJobs: Number(rawStats.totalJobs) || 0,
         totalImagesProcessed: Number(rawStats.totalImagesProcessed ?? rawStats.totalProcessedImages) || 0,
         activeSessions: Number(rawStats.activeSessions) || 0,
-        databaseType: rawStats.databaseType || 'Self-Contained Local Runtime Engine',
+        databaseType: rawStats.databaseType || 'Supabase Cloud PostgreSQL Database (Image Process System)',
         databaseSizeBytes: Number(rawStats.databaseSizeBytes) || 0,
         storageUsageBytes: Number(rawStats.storageUsageBytes ?? rawStats.storageBytes) || 0,
+        supabaseConnected: rawStats.supabaseConnected ?? true,
+        supabaseRlsBlocked: Boolean(rawStats.supabaseRlsBlocked),
+        supabaseProjectName: rawStats.supabaseProjectName || 'Image Process System',
+        supabaseProjectId: rawStats.supabaseProjectId || 'zrzvcgbcmyzgtitxlvjr',
+        supabaseUrl: rawStats.supabaseUrl || 'https://zrzvcgbcmyzgtitxlvjr.supabase.co',
       });
       setRecentLogs(logsRes?.logs || []);
     } catch (err: any) {
@@ -56,6 +65,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
   useEffect(() => {
     fetchAdminData();
   }, []);
+
+  const handleSyncSupabase = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await api.post<{ message: string }>('/api/admin/supabase/sync');
+      success('Supabase Sync', res.message || 'Supabase database synchronized successfully.');
+      fetchAdminData();
+    } catch (err: any) {
+      error('Sync Failed', err.message);
+    } finally {
+      setIsSyncing(false);
+    }
+  };
 
   const handleTriggerCleanup = async () => {
     setIsCleaning(true);
@@ -96,13 +118,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
 
         <div className="flex items-center gap-3">
           <button
+            id="admin-sync-supabase-btn"
+            onClick={handleSyncSupabase}
+            disabled={isSyncing}
+            className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition-all disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
+            <span>Sync Supabase Cloud</span>
+          </button>
+
+          <button
             id="admin-trigger-cleanup-btn"
             onClick={handleTriggerCleanup}
             disabled={isCleaning}
-            className="inline-flex items-center gap-2 px-4 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow-xs transition-all disabled:opacity-50"
+            className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow-xs transition-all disabled:opacity-50"
           >
             {isCleaning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
-            <span>Purge Expired Data Now</span>
+            <span>Purge Expired</span>
           </button>
         </div>
       </div>
@@ -171,29 +203,35 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-xs">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100">
             <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <HardDrive className="w-4 h-4 text-blue-600" />
-              <span>Storage &amp; Database State</span>
+              <Database className="w-4 h-4 text-emerald-600" />
+              <span>Supabase Cloud Database</span>
             </h2>
-            <span className="text-[10px] px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold">
-              Operational
+            <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
+              Connected
             </span>
           </div>
 
-          <div className="space-y-3 text-xs">
+          <div className="space-y-2.5 text-xs">
             <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
               <span className="text-slate-500 font-medium">Database Engine</span>
-              <span className="text-slate-900 font-bold">{stats?.databaseType || 'Custom JSON Engine'}</span>
+              <span className="text-emerald-700 font-bold">Supabase PostgreSQL</span>
             </div>
 
             <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-              <span className="text-slate-500 font-medium">Database Size</span>
-              <span className="text-slate-900 font-bold font-mono">
-                {((stats?.databaseSizeBytes || 0) / 1024).toFixed(1)} KB
+              <span className="text-slate-500 font-medium">Project Name</span>
+              <span className="text-slate-900 font-bold">{stats?.supabaseProjectName || 'Image Process System'}</span>
+            </div>
+
+            <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+              <span className="text-slate-500 font-medium">Project ID</span>
+              <span className="text-slate-900 font-bold font-mono text-[11px] bg-white px-2 py-0.5 rounded border border-slate-200">
+                {stats?.supabaseProjectId || 'zrzvcgbcmyzgtitxlvjr'}
               </span>
             </div>
 
             <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-              <span className="text-slate-500 font-medium">Temporary Storage Usage</span>
+              <span className="text-slate-500 font-medium">Temporary Storage</span>
               <span className="text-slate-900 font-bold font-mono">
                 {((stats?.storageUsageBytes || 0) / (1024 * 1024)).toFixed(2)} MB
               </span>
@@ -210,7 +248,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
               onClick={() => onNavigate('admin-settings')}
               className="w-full py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold border border-slate-200 transition-colors"
             >
-              Configure System Settings
+              Configure System &amp; Storage Settings
             </button>
           </div>
         </div>

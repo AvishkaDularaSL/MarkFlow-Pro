@@ -63,7 +63,7 @@ router.post(
       next();
     });
   },
-  (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user!.id;
     const { name, description } = req.body;
 
@@ -87,9 +87,17 @@ router.post(
       logo_mime: req.file.mimetype,
     });
 
+    // Await cloud sync to report accurate persistence status
+    const syncRes = await db.syncBusinessToSupabase(business);
+
     res.status(201).json({
-      message: 'Business created successfully',
+      message: syncRes.success
+        ? 'Business successfully registered and saved to Supabase cloud database.'
+        : 'Business registered in active session.',
       business,
+      supabaseSaved: syncRes.success,
+      supabaseError: syncRes.error,
+      supabaseRlsBlocked: syncRes.rlsBlocked,
     });
   }
 );
@@ -106,7 +114,7 @@ router.put(
       next();
     });
   },
-  (req: AuthenticatedRequest, res: Response) => {
+  async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user!.id;
     const bizId = req.params.id;
     const { name, description } = req.body;
@@ -138,9 +146,20 @@ router.put(
     }
 
     const updated = db.updateBusiness(bizId, updates);
+    if (!updated) {
+      return res.status(404).json({ error: 'Business not found.' });
+    }
+
+    const syncRes = await db.syncBusinessToSupabase(updated);
+
     res.json({
-      message: 'Business updated successfully',
+      message: syncRes.success
+        ? 'Business profile updated and saved to Supabase.'
+        : 'Business profile updated in active session.',
       business: updated,
+      supabaseSaved: syncRes.success,
+      supabaseError: syncRes.error,
+      supabaseRlsBlocked: syncRes.rlsBlocked,
     });
   }
 );

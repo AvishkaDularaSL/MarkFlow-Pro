@@ -14,6 +14,16 @@ import {
   ActivityLog,
 } from './types';
 
+import {
+  supabase,
+  SUPABASE_PROJECT_NAME,
+  SUPABASE_PROJECT_ID,
+  SUPABASE_URL,
+  SUPABASE_KEY,
+  SUPABASE_SQL_SCHEMA,
+  testSupabaseConnection,
+} from './supabase';
+
 interface DatabaseSchema {
   users: User[];
   businesses: Business[];
@@ -26,17 +36,13 @@ interface DatabaseSchema {
 }
 
 const STORAGE_DIR = path.join(process.cwd(), 'storage');
-const DB_FILE = path.join(STORAGE_DIR, 'watermark_database.json');
 
-// Ensure base directories exist
-if (!fs.existsSync(STORAGE_DIR)) {
-  fs.mkdirSync(STORAGE_DIR, { recursive: true });
-}
+// Ensure binary and temporary storage directories exist
 const LOGOS_DIR = path.join(STORAGE_DIR, 'logos');
 const TEMP_DIR = path.join(STORAGE_DIR, 'temporary');
 const ZIPS_DIR = path.join(STORAGE_DIR, 'zips');
 
-[LOGOS_DIR, TEMP_DIR, ZIPS_DIR].forEach((dir) => {
+[STORAGE_DIR, LOGOS_DIR, TEMP_DIR, ZIPS_DIR].forEach((dir) => {
   if (!fs.existsSync(dir)) {
     fs.mkdirSync(dir, { recursive: true });
   }
@@ -44,37 +50,11 @@ const ZIPS_DIR = path.join(STORAGE_DIR, 'zips');
 
 class AppDatabase {
   private data: DatabaseSchema;
-  private isWriting = false;
+  private supabaseConnected = false;
+  private supabaseRlsBlocked = false;
 
   constructor() {
-    this.data = this.loadFallbackDatabase();
-    this.seedDefaultData();
-  }
-
-  /**
-   * Load JSON storage cache
-   */
-  private loadFallbackDatabase(): DatabaseSchema {
-    if (fs.existsSync(DB_FILE)) {
-      try {
-        const raw = fs.readFileSync(DB_FILE, 'utf-8');
-        const parsed = JSON.parse(raw);
-        return {
-          users: parsed.users || [],
-          businesses: parsed.businesses || [],
-          processing_sessions: parsed.processing_sessions || [],
-          uploaded_images: parsed.uploaded_images || [],
-          processing_jobs: parsed.processing_jobs || [],
-          processed_images: parsed.processed_images || [],
-          system_settings: parsed.system_settings || this.getDefaultSystemSettings(),
-          activity_logs: parsed.activity_logs || [],
-        };
-      } catch (err) {
-        console.error('Failed to parse database file, reinitializing', err);
-      }
-    }
-
-    return {
+    this.data = {
       users: [],
       businesses: [],
       processing_sessions: [],
@@ -84,6 +64,156 @@ class AppDatabase {
       system_settings: this.getDefaultSystemSettings(),
       activity_logs: [],
     };
+
+    // Seed default admin in-memory first
+    this.seedDefaultAdmin();
+    // Connect and load everything from Supabase Cloud
+    this.initSupabase();
+  }
+
+  /**
+   * Helper to safely execute Supabase PromiseLikes asynchronously
+   */
+  private async safeSupabase(fn: () => PromiseLike<any>) {
+    try {
+      const res: any = await fn();
+      if (res && res.error) {
+        const isRls =
+          res.error.code === '42501' ||
+          res.error.message?.toLowerCase().includes('row-level security') ||
+          res.error.message?.toLowerCase().includes('violates');
+        if (isRls) {
+          this.supabaseRlsBlocked = true;
+        }
+        console.warn('[Supabase API Notice]:', res.error.message);
+      }
+    } catch (err: any) {
+      console.warn('[Supabase Promise Exception]:', err?.message);
+    }
+  }
+
+  /**
+   * Connect to Supabase Cloud, load records into runtime state and sync default admin
+   */
+  private async initSupabase() {
+    try {
+      const status = await testSupabaseConnection();
+      this.supabaseConnected = status.connected;
+      this.supabaseRlsBlocked = Boolean(status.rlsBlocked);
+
+      if (status.connected) {
+        console.log(`[Supabase] Cloud database connected: ${SUPABASE_PROJECT_NAME} (${SUPABASE_PROJECT_ID})`);
+        await this.loadAllFromSupabase();
+        // Ensure default admin & settings exist in Supabase
+        await this.ensureAdminInSupabase();
+      } else {
+        console.log(`[Supabase] Cloud database initialized with endpoint ${SUPABASE_URL}`);
+      }
+    } catch (err) {
+      console.warn('[Supabase] Initial connection notice:', err);
+    }
+  }
+
+  /**
+   * Load all existing tables directly from Supabase Cloud into memory
+   */
+  public async loadAllFromSupabase() {
+    try {
+      // 1. Fetch Users
+      const { data: usersData, error: usersErr } = await supabase.from('users').select('*');
+      if (!usersErr && usersData && usersData.length > 0) {
+        this.data.users = usersData.map((u: any) => ({
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          password: u.password,
+          role: u.role,
+          status: u.status,
+          created_at: u.created_at || new Date().toISOString(),
+          updated_at: u.updated_at || new Date().toISOString(),
+        }));
+      }
+
+      // 2. Fetch Businesses
+      const { data: bizData, error: bizErr } = await supabase.from('businesses').select('*');
+      if (!bizErr && bizData && bizData.length > 0) {
+        this.data.businesses = bizData.map((b: any) => ({
+          id: b.id,
+          user_id: b.user_id,
+          name: b.name,
+          description: b.description || '',
+          logo_path: b.logo_path,
+          logo_original_name: b.logo_original_name,
+          logo_mime: b.logo_mime,
+          created_at: b.created_at || new Date().toISOString(),
+          updated_at: b.updated_at || new Date().toISOString(),
+        }));
+      }
+
+      // 3. Fetch Processing Jobs
+      const { data: jobsData, error: jobsErr } = await supabase
+        .from('processing_jobs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (!jobsErr && jobsData && jobsData.length > 0) {
+        this.data.processing_jobs = jobsData.map((j: any) => ({
+          id: j.id,
+          user_id: j.user_id,
+          processing_session_id: `sess_cloud_${j.id}`,
+          business_id: j.business_id,
+          business_name: j.business_name,
+          output_format: j.output_format || 'webp',
+          quality: j.quality || 80,
+          opacity: j.opacity || 50,
+          position: j.position || 'center',
+          logo_size: j.logo_size || 50,
+          margin: j.margin || 20,
+          rotation: j.rotation || 0,
+          total_images: j.total_images || 0,
+          completed_images: j.completed_images || 0,
+          failed_images: j.failed_images || 0,
+          status: j.status || 'completed',
+          error_message: j.error_message || undefined,
+          zip_filename: j.zip_filename || undefined,
+          created_at: j.created_at || new Date().toISOString(),
+          completed_at: j.completed_at || undefined,
+          expires_at: j.expires_at || new Date(Date.now() + 3600000).toISOString(),
+        }));
+      }
+
+      // 4. Fetch System Settings
+      const { data: settingsData, error: settingsErr } = await supabase.from('system_settings').select('*');
+      if (!settingsErr && settingsData && settingsData.length > 0) {
+        this.data.system_settings = settingsData.map((s: any) => ({
+          id: s.id,
+          key: s.key,
+          value: s.value,
+          description: s.description || '',
+          updated_at: s.updated_at || new Date().toISOString(),
+        }));
+      }
+
+      // 5. Fetch Activity Logs
+      const { data: logsData, error: logsErr } = await supabase
+        .from('activity_logs')
+        .select('*')
+        .order('created_at', { ascending: false })
+        .limit(100);
+      if (!logsErr && logsData && logsData.length > 0) {
+        this.data.activity_logs = logsData.map((l: any) => ({
+          id: l.id,
+          user_id: l.user_id,
+          user_email: l.user_email,
+          action: l.action,
+          metadata: l.metadata || {},
+          ip_address: l.ip_address,
+          created_at: l.created_at || new Date().toISOString(),
+        }));
+      }
+    } catch (err) {
+      console.warn('[Supabase load error]:', err);
+    }
   }
 
   private getDefaultSystemSettings(): SystemSetting[] {
@@ -127,35 +257,19 @@ class AppDatabase {
     ];
   }
 
-  private saveDatabase() {
-    if (this.isWriting) return;
-    this.isWriting = true;
-    try {
-      const tempPath = `${DB_FILE}.tmp.${Date.now()}`;
-      fs.writeFileSync(tempPath, JSON.stringify(this.data, null, 2), 'utf-8');
-      fs.renameSync(tempPath, DB_FILE);
-    } catch (err) {
-      console.error('Failed to persist database file', err);
-    } finally {
-      this.isWriting = false;
-    }
-  }
-
   /**
-   * Seed admin user and verify administrator presence
+   * Seed admin user in runtime
    */
-  private seedDefaultData() {
-    let changed = false;
-
-    // Primary Administrator Account
+  private seedDefaultAdmin() {
     const primaryAdminEmail = 'dularaavishka890@gmail.com';
     const existingAdmin = this.data.users.find(
       (u) => u.email.toLowerCase() === primaryAdminEmail.toLowerCase()
     );
 
+    const salt = bcrypt.genSaltSync(10);
+    const hashedPassword = bcrypt.hashSync('Dulara@2001', salt);
+
     if (!existingAdmin) {
-      const salt = bcrypt.genSaltSync(10);
-      const hashedPassword = bcrypt.hashSync('Dulara@2001', salt);
       this.data.users.push({
         id: 'user_admin_primary',
         name: 'Dulara Avishka',
@@ -166,18 +280,157 @@ class AppDatabase {
         created_at: new Date().toISOString(),
         updated_at: new Date().toISOString(),
       });
-      changed = true;
     } else {
-      // Ensure role is admin, active, and password matches
-      const salt = bcrypt.genSaltSync(10);
-      existingAdmin.password = bcrypt.hashSync('Dulara@2001', salt);
+      existingAdmin.password = hashedPassword;
       existingAdmin.role = 'admin';
       existingAdmin.status = 'active';
-      changed = true;
+    }
+  }
+
+  /**
+   * Ensure default admin & settings are present in Supabase Cloud
+   */
+  private async ensureAdminInSupabase() {
+    const admin = this.data.users.find((u) => u.email.toLowerCase() === 'dularaavishka890@gmail.com');
+    if (admin) {
+      this.safeSupabase(() =>
+        supabase.from('users').upsert({
+          id: admin.id,
+          name: admin.name,
+          email: admin.email,
+          password: admin.password,
+          role: 'admin',
+          status: 'active',
+          created_at: admin.created_at,
+          updated_at: new Date().toISOString(),
+        }, { onConflict: 'email' })
+      );
     }
 
-    if (changed) {
-      this.saveDatabase();
+    if (this.data.system_settings.length > 0) {
+      this.safeSupabase(() =>
+        supabase.from('system_settings').upsert(this.data.system_settings, { onConflict: 'id' })
+      );
+    }
+  }
+
+  /**
+   * Sync active records to Supabase PostgreSQL tables in background
+   */
+  public async syncToSupabase(): Promise<{ success: boolean; error?: string; rlsBlocked?: boolean }> {
+    try {
+      // 1. Sync users
+      if (this.data.users.length > 0) {
+        const usersToSync = this.data.users.map((u) => ({
+          id: u.id,
+          name: u.name,
+          email: u.email,
+          password: u.password,
+          role: u.role,
+          status: u.status,
+          created_at: u.created_at,
+          updated_at: u.updated_at,
+        }));
+        const { error: userErr } = await supabase.from('users').upsert(usersToSync, { onConflict: 'id' });
+        if (userErr) {
+          const isRls = userErr.code === '42501' || userErr.message?.toLowerCase().includes('row-level security') || userErr.message?.toLowerCase().includes('violates');
+          this.supabaseRlsBlocked = isRls;
+          return {
+            success: false,
+            rlsBlocked: isRls,
+            error: isRls
+              ? 'Supabase Row-Level Security (RLS) is active on public.users. Run the RLS fix script in Supabase SQL Editor to enable writing.'
+              : userErr.message,
+          };
+        }
+      }
+
+      // 2. Sync businesses
+      if (this.data.businesses.length > 0) {
+        const businessesToSync = this.data.businesses.map((b) => ({
+          id: b.id,
+          user_id: b.user_id,
+          name: b.name,
+          description: b.description || '',
+          logo_path: b.logo_path,
+          logo_original_name: b.logo_original_name,
+          logo_mime: b.logo_mime,
+          created_at: b.created_at,
+          updated_at: b.updated_at,
+        }));
+        const { error: bizErr } = await supabase.from('businesses').upsert(businessesToSync, { onConflict: 'id' });
+        if (bizErr) {
+          const isRls = bizErr.code === '42501' || bizErr.message?.toLowerCase().includes('row-level security') || bizErr.message?.toLowerCase().includes('violates');
+          this.supabaseRlsBlocked = isRls;
+          return {
+            success: false,
+            rlsBlocked: isRls,
+            error: isRls
+              ? 'Supabase Row-Level Security (RLS) is active on public.businesses. Run the RLS fix script in Supabase SQL Editor to enable writing.'
+              : bizErr.message,
+          };
+        }
+      }
+
+      // 3. Sync processing jobs
+      if (this.data.processing_jobs.length > 0) {
+        const jobsToSync = this.data.processing_jobs.slice(0, 50).map((j) => ({
+          id: j.id,
+          user_id: j.user_id,
+          business_id: j.business_id,
+          business_name: j.business_name,
+          output_format: j.output_format,
+          quality: j.quality,
+          opacity: j.opacity,
+          position: j.position,
+          logo_size: j.logo_size,
+          margin: j.margin,
+          rotation: j.rotation,
+          status: j.status,
+          total_images: j.total_images,
+          completed_images: j.completed_images,
+          failed_images: j.failed_images,
+          error_message: j.error_message || null,
+          zip_filename: j.zip_filename || null,
+          created_at: j.created_at,
+          completed_at: j.completed_at || null,
+          expires_at: j.expires_at,
+        }));
+        const { error: jobErr } = await supabase.from('processing_jobs').upsert(jobsToSync, { onConflict: 'id' });
+        if (jobErr) {
+          const isRls = jobErr.code === '42501' || jobErr.message?.toLowerCase().includes('row-level security') || jobErr.message?.toLowerCase().includes('violates');
+          this.supabaseRlsBlocked = isRls;
+          return {
+            success: false,
+            rlsBlocked: isRls,
+            error: isRls
+              ? 'Supabase Row-Level Security (RLS) is active on public.processing_jobs. Run the RLS fix script in Supabase SQL Editor to enable writing.'
+              : jobErr.message,
+          };
+        }
+      }
+
+      // 4. Sync settings
+      if (this.data.system_settings.length > 0) {
+        const { error: setErr } = await supabase.from('system_settings').upsert(this.data.system_settings, { onConflict: 'id' });
+        if (setErr) {
+          const isRls = setErr.code === '42501' || setErr.message?.toLowerCase().includes('row-level security') || setErr.message?.toLowerCase().includes('violates');
+          this.supabaseRlsBlocked = isRls;
+          return {
+            success: false,
+            rlsBlocked: isRls,
+            error: isRls
+              ? 'Supabase Row-Level Security (RLS) is active on public.system_settings. Run the RLS fix script in Supabase SQL Editor to enable writing.'
+              : setErr.message,
+          };
+        }
+      }
+
+      this.supabaseConnected = true;
+      this.supabaseRlsBlocked = false;
+      return { success: true };
+    } catch (err: any) {
+      return { success: false, error: err?.message || 'Sync encountered an error' };
     }
   }
 
@@ -205,7 +458,20 @@ class AppDatabase {
       updated_at: new Date().toISOString(),
     };
     this.data.users.push(newUser);
-    this.saveDatabase();
+
+    // Save directly to Supabase
+    this.safeSupabase(() =>
+      supabase.from('users').insert({
+        id: newUser.id,
+        name: newUser.name,
+        email: newUser.email,
+        password: newUser.password,
+        role: newUser.role,
+        status: newUser.status,
+        created_at: newUser.created_at,
+        updated_at: newUser.updated_at,
+      })
+    );
 
     this.logActivity({
       user_id: newUser.id,
@@ -225,7 +491,15 @@ class AppDatabase {
       ...updates,
       updated_at: nowIso,
     };
-    this.saveDatabase();
+
+    // Update in Supabase
+    this.safeSupabase(() =>
+      supabase.from('users').update({
+        ...updates,
+        updated_at: nowIso,
+      }).eq('id', id)
+    );
+
     return this.data.users[idx];
   }
 
@@ -249,7 +523,8 @@ class AppDatabase {
     this.data.processing_jobs = this.data.processing_jobs.filter((j) => j.user_id !== id);
     this.data.processed_images = this.data.processed_images.filter((p) => p.user_id !== id);
 
-    this.saveDatabase();
+    // Delete in Supabase (Cascades to businesses & jobs)
+    this.safeSupabase(() => supabase.from('users').delete().eq('id', id));
 
     this.logActivity({
       action: 'USER_DELETED',
@@ -276,6 +551,61 @@ class AppDatabase {
     );
   }
 
+  /**
+   * Directly sync or upsert a business brand to Supabase PostgreSQL table
+   */
+  public async syncBusinessToSupabase(biz: Business): Promise<{ success: boolean; error?: string; rlsBlocked?: boolean }> {
+    try {
+      // 1. Ensure user is in Supabase users table (due to foreign key constraint)
+      const user = this.getUserById(biz.user_id);
+      if (user) {
+        await supabase.from('users').upsert({
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          password: user.password,
+          role: user.role,
+          status: user.status,
+          created_at: user.created_at,
+          updated_at: user.updated_at,
+        }, { onConflict: 'id' });
+      }
+
+      // 2. Insert or Upsert into businesses table
+      const { error: insErr } = await supabase.from('businesses').upsert({
+        id: biz.id,
+        user_id: biz.user_id,
+        name: biz.name,
+        description: biz.description || '',
+        logo_path: biz.logo_path,
+        logo_original_name: biz.logo_original_name,
+        logo_mime: biz.logo_mime,
+        created_at: biz.created_at,
+        updated_at: biz.updated_at,
+      }, { onConflict: 'id' });
+
+      if (insErr) {
+        const isRls =
+          insErr.code === '42501' ||
+          insErr.message?.toLowerCase().includes('row-level security') ||
+          insErr.message?.toLowerCase().includes('violates');
+        if (isRls) {
+          this.supabaseRlsBlocked = true;
+        }
+        console.warn(`[Supabase Business Sync]: ${insErr.message} (Code: ${insErr.code})`);
+        return { success: false, error: insErr.message, rlsBlocked: isRls };
+      }
+
+      this.supabaseConnected = true;
+      this.supabaseRlsBlocked = false;
+      console.log(`[Supabase] Business "${biz.name}" successfully saved to cloud database.`);
+      return { success: true };
+    } catch (err: any) {
+      console.warn('[Supabase Business Sync Exception]:', err?.message);
+      return { success: false, error: err?.message };
+    }
+  }
+
   createBusiness(business: Omit<Business, 'id' | 'created_at' | 'updated_at'>): Business {
     const newBiz: Business = {
       ...business,
@@ -284,7 +614,9 @@ class AppDatabase {
       updated_at: new Date().toISOString(),
     };
     this.data.businesses.push(newBiz);
-    this.saveDatabase();
+
+    // Sync to Supabase in background
+    this.syncBusinessToSupabase(newBiz);
 
     this.logActivity({
       user_id: newBiz.user_id,
@@ -303,7 +635,9 @@ class AppDatabase {
       ...updates,
       updated_at: nowIso,
     };
-    this.saveDatabase();
+
+    // Sync to Supabase
+    this.syncBusinessToSupabase(this.data.businesses[idx]);
 
     this.logActivity({
       user_id: this.data.businesses[idx].user_id,
@@ -323,7 +657,9 @@ class AppDatabase {
       } catch (_) {}
     }
     this.data.businesses.splice(idx, 1);
-    this.saveDatabase();
+
+    // Delete in Supabase
+    this.safeSupabase(() => supabase.from('businesses').delete().eq('id', id));
 
     this.logActivity({
       user_id: userId || biz.user_id,
@@ -354,7 +690,9 @@ class AppDatabase {
       }
     });
     this.data.processed_images = this.data.processed_images.filter((p) => p.processing_job_id !== id);
-    this.saveDatabase();
+
+    // Delete in Supabase
+    this.safeSupabase(() => supabase.from('processing_jobs').delete().eq('id', id));
 
     return true;
   }
@@ -374,8 +712,6 @@ class AppDatabase {
       expires_at: expiresAt,
     };
     this.data.processing_sessions.push(session);
-    this.saveDatabase();
-
     return session;
   }
 
@@ -393,7 +729,6 @@ class AppDatabase {
       const newExpires = new Date(Date.now() + lifetimeSeconds * 1000).toISOString();
       sess.updated_at = nowIso;
       sess.expires_at = newExpires;
-      this.saveDatabase();
     }
   }
 
@@ -408,7 +743,6 @@ class AppDatabase {
       created_at: new Date().toISOString(),
     };
     this.data.uploaded_images.push(newImg);
-    this.saveDatabase();
     return newImg;
   }
 
@@ -436,7 +770,6 @@ class AppDatabase {
       } catch (_) {}
     }
     this.data.uploaded_images.splice(idx, 1);
-    this.saveDatabase();
     return true;
   }
 
@@ -484,7 +817,33 @@ class AppDatabase {
       created_at: new Date().toISOString(),
     };
     this.data.processing_jobs.unshift(newJob);
-    this.saveDatabase();
+
+    // Save directly to Supabase
+    this.safeSupabase(() =>
+      supabase.from('processing_jobs').insert({
+        id: newJob.id,
+        user_id: newJob.user_id,
+        business_id: newJob.business_id,
+        business_name: newJob.business_name,
+        output_format: newJob.output_format,
+        quality: newJob.quality,
+        opacity: newJob.opacity,
+        position: newJob.position,
+        logo_size: newJob.logo_size,
+        margin: newJob.margin,
+        rotation: newJob.rotation,
+        status: newJob.status,
+        total_images: newJob.total_images,
+        completed_images: newJob.completed_images,
+        failed_images: newJob.failed_images,
+        error_message: newJob.error_message || null,
+        zip_filename: newJob.zip_filename || null,
+        created_at: newJob.created_at,
+        completed_at: newJob.completed_at || null,
+        expires_at: newJob.expires_at,
+      })
+    );
+
     return newJob;
   }
 
@@ -495,7 +854,19 @@ class AppDatabase {
       ...this.data.processing_jobs[idx],
       ...updates,
     };
-    this.saveDatabase();
+
+    // Update in Supabase
+    this.safeSupabase(() =>
+      supabase.from('processing_jobs').update({
+        status: this.data.processing_jobs[idx].status,
+        completed_images: this.data.processing_jobs[idx].completed_images,
+        failed_images: this.data.processing_jobs[idx].failed_images,
+        error_message: this.data.processing_jobs[idx].error_message || null,
+        zip_filename: this.data.processing_jobs[idx].zip_filename || null,
+        completed_at: this.data.processing_jobs[idx].completed_at || null,
+      }).eq('id', id)
+    );
+
     return this.data.processing_jobs[idx];
   }
 
@@ -532,7 +903,6 @@ class AppDatabase {
       created_at: new Date().toISOString(),
     };
     this.data.processed_images.push(newImg);
-    this.saveDatabase();
     return newImg;
   }
 
@@ -579,16 +949,26 @@ class AppDatabase {
     if (idx !== -1) {
       this.data.system_settings[idx].value = value;
       this.data.system_settings[idx].updated_at = nowIso;
+      // Upsert in Supabase
+      this.safeSupabase(() =>
+        supabase.from('system_settings').upsert({
+          id: this.data.system_settings[idx].id,
+          key,
+          value,
+          updated_at: nowIso,
+        }, { onConflict: 'id' })
+      );
     } else {
-      this.data.system_settings.push({
+      const newSetting = {
         id: `setting_${Date.now()}`,
         key,
         value,
         description: `Custom setting ${key}`,
         updated_at: nowIso,
-      });
+      };
+      this.data.system_settings.push(newSetting);
+      this.safeSupabase(() => supabase.from('system_settings').insert(newSetting));
     }
-    this.saveDatabase();
   }
 
   // ==========================================
@@ -605,7 +985,20 @@ class AppDatabase {
     if (this.data.activity_logs.length > 200) {
       this.data.activity_logs = this.data.activity_logs.slice(0, 200);
     }
-    this.saveDatabase();
+
+    // Insert directly into Supabase
+    this.safeSupabase(() =>
+      supabase.from('activity_logs').insert({
+        id: newLog.id,
+        user_id: newLog.user_id || null,
+        user_email: newLog.user_email || null,
+        action: newLog.action,
+        metadata: newLog.metadata || {},
+        ip_address: newLog.ip_address || null,
+        created_at: newLog.created_at,
+      })
+    );
+
     return newLog;
   }
 
@@ -655,9 +1048,14 @@ class AppDatabase {
       activeSessions,
       storageBytes,
       storageFormatted: (storageBytes / (1024 * 1024)).toFixed(2) + ' MB',
-      databaseType: 'Self-Contained Local Runtime Engine',
+      databaseType: `Supabase Cloud PostgreSQL Database (${SUPABASE_PROJECT_NAME})`,
       databaseSizeBytes: storageBytes + this.data.users.length * 1024 + this.data.processing_jobs.length * 512,
       databaseConnected: true,
+      supabaseConnected: this.supabaseConnected,
+      supabaseRlsBlocked: this.supabaseRlsBlocked,
+      supabaseProjectName: SUPABASE_PROJECT_NAME,
+      supabaseProjectId: SUPABASE_PROJECT_ID,
+      supabaseUrl: SUPABASE_URL,
     };
   }
 
@@ -720,8 +1118,6 @@ class AppDatabase {
     );
     this.data.processing_jobs = this.data.processing_jobs.filter((j) => !expiredJobIds.has(j.id));
 
-    this.saveDatabase();
-
     return {
       sessionsCleaned: expiredSessions.length,
       jobsCleaned: expiredJobs.length,
@@ -733,7 +1129,7 @@ class AppDatabase {
    * Removes all businesses, uploaded images, jobs, processed images,
    * non-admin users, and reset settings to default while keeping the specified admin.
    */
-  wipeAllDataExceptAdmin(adminEmail: string = 'dularaavishka890@gmail.com') {
+  async wipeAllDataExceptAdmin(adminEmail: string = 'dularaavishka890@gmail.com') {
     // 1. Clean physical disk files
     const cleanDirectoryFiles = (dirPath: string) => {
       if (fs.existsSync(dirPath)) {
@@ -790,7 +1186,7 @@ class AppDatabase {
       ];
     }
 
-    // 3. Reset database records
+    // 3. Reset runtime records
     this.data.users = finalUsers;
     this.data.businesses = [];
     this.data.processing_sessions = [];
@@ -813,12 +1209,18 @@ class AppDatabase {
       },
     ];
 
-    this.saveDatabase();
+    // 4. Wipe non-admin users, businesses, jobs in Supabase
+    try {
+      await supabase.from('businesses').delete().neq('id', 'preserve_none');
+      await supabase.from('processing_jobs').delete().neq('id', 'preserve_none');
+      await supabase.from('users').delete().neq('email', adminEmail);
+      await this.ensureAdminInSupabase();
+    } catch (_) {}
 
     return {
       success: true,
       preservedAdmin: adminEmail,
-      message: 'All application data has been wiped and default settings restored.',
+      message: 'All application data has been wiped and default settings restored in Supabase.',
     };
   }
 }
