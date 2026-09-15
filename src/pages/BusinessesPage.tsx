@@ -237,20 +237,34 @@ export const BusinessesPage: React.FC<BusinessesPageProps> = ({
               <div>
                 {/* Checkerboard transparent preview box for logo */}
                 <div
-                  className="w-full h-36 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center p-4 relative overflow-hidden group-hover:border-slate-300 transition-colors"
+                  onClick={() => handleOpenEdit(biz)}
+                  className="w-full h-36 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-center p-4 relative overflow-hidden group-hover:border-blue-300 transition-all cursor-pointer"
                   style={{
                     backgroundImage: `radial-gradient(#cbd5e1 1px, transparent 1px)`,
                     backgroundSize: '12px 12px',
                   }}
+                  title="Click to edit business profile or change logo"
                 >
                   <img
                     src={`/api/businesses/${biz.id}/logo?t=${new Date(biz.updated_at).getTime()}`}
                     alt={biz.name}
                     className="max-h-24 max-w-full object-contain filter drop-shadow-xs transition-transform duration-200 group-hover:scale-105"
+                    onError={(e) => {
+                      // Fallback dynamically if needed
+                      const target = e.currentTarget;
+                      if (!target.dataset.retried) {
+                        target.dataset.retried = 'true';
+                        target.src = `/api/businesses/${biz.id}/logo?fallback=true&t=${Date.now()}`;
+                      }
+                    }}
                   />
                   <span className="absolute bottom-2 right-2 text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-white/90 border border-slate-200 text-slate-600 shadow-xs">
-                    {biz.logo_mime.replace('image/', '').toUpperCase()}
+                    {(biz.logo_mime || 'image/png').replace('image/', '').toUpperCase()}
                   </span>
+                  <div className="absolute inset-0 bg-slate-900/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-1.5 text-white text-xs font-bold backdrop-blur-[1px]">
+                    <Edit2 className="w-3.5 h-3.5" />
+                    <span>Change Logo</span>
+                  </div>
                 </div>
 
                 <div className="mt-4">

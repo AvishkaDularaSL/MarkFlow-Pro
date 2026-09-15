@@ -666,22 +666,66 @@ export const ProcessImagesPage: React.FC<ProcessImagesPageProps> = ({
             />
 
             {/* Logo Size (%) Slider */}
-            <div className="space-y-1.5 pt-2 border-t border-slate-100">
+            <div className="space-y-2 pt-2 border-t border-slate-100">
               <div className="flex items-center justify-between text-xs">
-                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Logo Scale (% of Image Width)</span>
-                <span className="font-bold font-mono text-blue-600">{config.logo_size}%</span>
+                <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">
+                  Logo Scale (% of Image Width)
+                </span>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    id="input-logo-size-number"
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={config.logo_size}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      if (!isNaN(val)) {
+                        setConfig((prev) => ({
+                          ...prev,
+                          logo_size: Math.max(1, Math.min(100, val)),
+                        }));
+                      }
+                    }}
+                    className="w-14 text-center font-bold font-mono text-blue-600 bg-blue-50/50 border border-blue-200 rounded px-1 py-0.5 text-xs focus:ring-1 focus:ring-blue-500 focus:outline-none"
+                  />
+                  <span className="font-bold text-slate-500 text-xs">%</span>
+                </div>
               </div>
               <input
                 id="slider-logo-size"
                 type="range"
-                min="5"
-                max="80"
+                min="1"
+                max="100"
+                step="1"
                 value={config.logo_size}
                 onChange={(e) =>
                   setConfig((prev) => ({ ...prev, logo_size: parseInt(e.target.value, 10) }))
                 }
                 className="w-full h-1.5 bg-slate-200 rounded-lg appearance-none cursor-pointer accent-blue-600"
               />
+              {/* Quick Preset Buttons */}
+              <div className="flex items-center justify-between gap-1 pt-0.5">
+                {[
+                  { label: '25%', val: 25 },
+                  { label: '50%', val: 50 },
+                  { label: '75%', val: 75 },
+                  { label: '100% (Full)', val: 100 },
+                ].map((preset) => (
+                  <button
+                    key={preset.val}
+                    type="button"
+                    onClick={() => setConfig((prev) => ({ ...prev, logo_size: preset.val }))}
+                    className={`flex-1 py-1 rounded text-[10px] font-semibold transition-colors border ${
+                      config.logo_size === preset.val
+                        ? 'bg-blue-600 text-white border-blue-600 shadow-2xs'
+                        : 'bg-slate-50 text-slate-600 border-slate-200 hover:bg-slate-100 hover:text-slate-900'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
             </div>
 
             {/* Opacity (%) Slider */}

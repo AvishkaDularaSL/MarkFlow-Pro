@@ -101,38 +101,42 @@ export class ImageProcessingService {
       throw new Error(`Logo file not found at path: ${logoPath}`);
     }
 
-    const safeTargetWidth = Math.max(16, Math.min(4000, Math.round(targetLogoWidth)));
+    const safeTargetWidth = Math.max(8, Math.min(8000, Math.round(targetLogoWidth)));
 
-    // 1. Initial resize of the logo
-    let logoPipeline = sharp(logoPath).resize({
-      width: safeTargetWidth,
-      fit: 'inside',
-      withoutEnlargement: false,
-    });
+    // Calculate inner dimensions accounting for card padding
+    const padding = bgMode === 'white-card' ? Math.max(6, Math.round(safeTargetWidth * 0.04)) : 0;
+    const innerTargetWidth = Math.max(8, safeTargetWidth - padding * 2);
 
-    // 2. Rotate if needed
+    // 1. Initial pipeline - Rotate FIRST so the rotated bounding box is accurately scaled to target width
+    let logoPipeline = sharp(logoPath).rotate(); // auto-orient
     if (rotation && rotation !== 0) {
       logoPipeline = logoPipeline.rotate(rotation, {
         background: { r: 0, g: 0, b: 0, alpha: 0 },
       });
     }
 
+    // 2. Resize rotated logo to fit inner target width
+    logoPipeline = logoPipeline.resize({
+      width: innerTargetWidth,
+      fit: 'inside',
+      withoutEnlargement: false,
+    });
+
     const resizedLogoPng = await logoPipeline.png().toBuffer();
     const logoMeta = await sharp(resizedLogoPng).metadata();
-    const logoW = logoMeta.width || safeTargetWidth;
-    const logoH = logoMeta.height || Math.round(safeTargetWidth / 2);
+    const logoW = logoMeta.width || innerTargetWidth;
+    const logoH = logoMeta.height || Math.round(innerTargetWidth / 2);
 
     // 3. Apply opacity and optional white-card wrapper using SVG composite
     const opacityRatio = Math.max(0.05, Math.min(1.0, opacityPercentage / 100));
     const base64Logo = resizedLogoPng.toString('base64');
 
-    const padding = bgMode === 'white-card' ? 12 : 0;
     const svgW = logoW + padding * 2;
     const svgH = logoH + padding * 2;
 
     const backgroundRect =
       bgMode === 'white-card'
-        ? `<rect width="${svgW}" height="${svgH}" rx="10" fill="#FFFFFF" fill-opacity="${opacityRatio * 0.92}" stroke="#E2E8F0" stroke-width="1" stroke-opacity="${opacityRatio * 0.8}"/>`
+        ? `<rect width="${svgW}" height="${svgH}" rx="${Math.max(4, Math.round(svgW * 0.03))}" fill="#FFFFFF" fill-opacity="${opacityRatio * 0.92}" stroke="#E2E8F0" stroke-width="1" stroke-opacity="${opacityRatio * 0.8}"/>`
         : '';
 
     const svgWrapper = `
@@ -173,8 +177,8 @@ export class ImageProcessingService {
     const origWidth = baseMeta.width || 1200;
     const origHeight = baseMeta.height || 800;
 
-    // 2. Compute target logo width based on user percentage (default 50%)
-    const sizePercentage = Math.max(5, Math.min(100, config.logo_size ?? 50));
+    // 2. Compute target logo width based on user percentage (default 50%, range 1-100%)
+    const sizePercentage = Math.max(1, Math.min(100, config.logo_size ?? 50));
     const targetLogoWidth = Math.round((origWidth * sizePercentage) / 100);
 
     // 3. Prepare watermark overlay
@@ -307,7 +311,7 @@ export class ImageProcessingService {
       .jpeg({ quality: 85 })
       .toBuffer();
 
-    const sizePercentage = Math.max(5, Math.min(100, config.logo_size ?? 50));
+    const sizePercentage = Math.max(1, Math.min(100, config.logo_size ?? 50));
     const targetLogoWidth = Math.round((previewW * sizePercentage) / 100);
 
     const preparedLogo = await this.prepareLogoBuffer(

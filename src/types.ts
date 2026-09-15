@@ -64,7 +64,7 @@ export type OutputFormat = 'original' | 'png' | 'jpeg' | 'webp' | 'avif';
 
 export interface WatermarkConfig {
   position: WatermarkPosition;
-  logo_size: number; // 5 to 80%, default 50%
+  logo_size: number; // 1 to 100%, default 50% (Full image width at 100%)
   opacity: number; // 5 to 100%
   margin: number; // 0 to 100px
   rotation: number; // -180 to 180 deg

@@ -2,6 +2,7 @@ import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
+import { StorageService } from './services/StorageService';
 
 import {
   User,
@@ -134,20 +135,40 @@ class AppDatabase {
         }));
       }
 
-      // 2. Fetch Businesses
+      // 2. Fetch Businesses & ensure logos are restored to disk / base64 persisted
       const { data: bizData, error: bizErr } = await supabase.from('businesses').select('*');
       if (!bizErr && bizData && bizData.length > 0) {
-        this.data.businesses = bizData.map((b: any) => ({
-          id: b.id,
-          user_id: b.user_id,
-          name: b.name,
-          description: b.description || '',
-          logo_path: b.logo_path,
-          logo_original_name: b.logo_original_name,
-          logo_mime: b.logo_mime,
-          created_at: b.created_at || new Date().toISOString(),
-          updated_at: b.updated_at || new Date().toISOString(),
-        }));
+        const loadedBusinesses: Business[] = [];
+        for (const b of bizData) {
+          const bizObj: Business = {
+            id: b.id,
+            user_id: b.user_id,
+            name: b.name,
+            description: b.description || '',
+            logo_path: b.logo_path,
+            logo_original_name: b.logo_original_name,
+            logo_mime: b.logo_mime || 'image/png',
+            created_at: b.created_at || new Date().toISOString(),
+            updated_at: b.updated_at || new Date().toISOString(),
+          };
+
+          try {
+            const ensured = await StorageService.ensureBusinessLogo(bizObj);
+            bizObj.logo_path = ensured.filePath;
+
+            // If Supabase record did not have a base64 data URI, update Supabase with durable base64
+            if (!b.logo_path || !b.logo_path.startsWith('data:')) {
+              this.safeSupabase(() =>
+                supabase.from('businesses').update({ logo_path: ensured.dataUrl }).eq('id', b.id)
+              );
+            }
+          } catch (logoErr) {
+            console.warn(`[Supabase Load] Logo materialization for ${b.name}:`, logoErr);
+          }
+
+          loadedBusinesses.push(bizObj);
+        }
+        this.data.businesses = loadedBusinesses;
       }
 
       // 3. Fetch Processing Jobs
@@ -573,15 +594,25 @@ class AppDatabase {
         }, { onConflict: 'id' });
       }
 
-      // 2. Insert or Upsert into businesses table
+      // 2. Prepare durable base64 logo data
+      let durableLogoPath = biz.logo_path;
+      try {
+        const ensured = await StorageService.ensureBusinessLogo(biz);
+        durableLogoPath = ensured.dataUrl;
+        biz.logo_path = ensured.filePath;
+      } catch (e) {
+        console.warn(`Could not prepare base64 for business ${biz.name}:`, e);
+      }
+
+      // 3. Insert or Upsert into businesses table
       const { error: insErr } = await supabase.from('businesses').upsert({
         id: biz.id,
         user_id: biz.user_id,
         name: biz.name,
         description: biz.description || '',
-        logo_path: biz.logo_path,
+        logo_path: durableLogoPath,
         logo_original_name: biz.logo_original_name,
-        logo_mime: biz.logo_mime,
+        logo_mime: biz.logo_mime || 'image/png',
         created_at: biz.created_at,
         updated_at: biz.updated_at,
       }, { onConflict: 'id' });

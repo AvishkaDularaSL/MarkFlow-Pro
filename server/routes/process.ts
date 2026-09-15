@@ -326,14 +326,23 @@ router.post('/preview', AuthService.requireAuth, async (req: AuthenticatedReques
     return res.status(404).json({ error: 'Business not found.' });
   }
 
-  if (!fs.existsSync(business.logo_path)) {
+  let effectiveLogoPath = business.logo_path;
+  try {
+    const logoInfo = await StorageService.ensureBusinessLogo(business);
+    effectiveLogoPath = logoInfo.filePath;
+    business.logo_path = logoInfo.filePath;
+  } catch (logoErr) {
+    console.warn(`Could not ensure logo for ${business.name}:`, logoErr);
+  }
+
+  if (!fs.existsSync(effectiveLogoPath)) {
     return res.status(400).json({ error: 'Business logo file is missing.' });
   }
 
   try {
     const previewResult = await ImageProcessingService.generatePreview(
       image.temporary_path,
-      business.logo_path,
+      effectiveLogoPath,
       config
     );
     res.json(previewResult);
@@ -366,7 +375,16 @@ router.post('/execute', AuthService.requireAuth, async (req: AuthenticatedReques
     return res.status(404).json({ error: 'Selected business not found.' });
   }
 
-  if (!fs.existsSync(business.logo_path)) {
+  let effectiveLogoPath = business.logo_path;
+  try {
+    const logoInfo = await StorageService.ensureBusinessLogo(business);
+    effectiveLogoPath = logoInfo.filePath;
+    business.logo_path = logoInfo.filePath;
+  } catch (logoErr) {
+    console.warn(`Could not ensure logo for execution on ${business.name}:`, logoErr);
+  }
+
+  if (!fs.existsSync(effectiveLogoPath)) {
     return res.status(400).json({ error: 'Business logo not found on server.' });
   }
 
@@ -446,7 +464,7 @@ router.post('/execute', AuthService.requireAuth, async (req: AuthenticatedReques
 
       const result = await ImageProcessingService.processImage(
         orig.temporary_path,
-        business.logo_path,
+        effectiveLogoPath,
         { ...config, output_format: currentImageFormat as any, quality: effectiveQuality, logo_size: config.logo_size ?? 50 },
         outputPath,
         outputFilename

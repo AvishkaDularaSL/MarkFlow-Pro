@@ -183,15 +183,38 @@ router.delete('/:id', AuthService.requireAuth, (req: AuthenticatedRequest, res: 
 });
 
 // Serve logo image
-router.get('/:id/logo', (req, res) => {
+router.get('/:id/logo', async (req, res) => {
   const biz = db.getBusinessById(req.params.id);
-  if (!biz || !fs.existsSync(biz.logo_path)) {
-    return res.status(404).json({ error: 'Logo not found.' });
+  if (!biz) {
+    try {
+      const fallbackBuf = await StorageService.generateBrandLogoBuffer('Brand');
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(fallbackBuf);
+    } catch {
+      return res.status(404).json({ error: 'Logo not found.' });
+    }
   }
 
-  res.setHeader('Content-Type', biz.logo_mime || 'image/png');
-  res.setHeader('Cache-Control', 'public, max-age=86400');
-  fs.createReadStream(biz.logo_path).pipe(res);
+  try {
+    const logoInfo = await StorageService.ensureBusinessLogo(biz);
+    if (biz.logo_path !== logoInfo.filePath && !biz.logo_path.startsWith('data:')) {
+      biz.logo_path = logoInfo.filePath;
+    }
+    res.setHeader('Content-Type', logoInfo.mime || 'image/png');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.send(logoInfo.buffer);
+  } catch (err) {
+    console.warn(`Failed to retrieve logo for ${biz.name}:`, err);
+    try {
+      const fallbackBuf = await StorageService.generateBrandLogoBuffer(biz.name);
+      res.setHeader('Content-Type', 'image/png');
+      res.setHeader('Cache-Control', 'public, max-age=3600');
+      return res.send(fallbackBuf);
+    } catch {
+      return res.status(500).json({ error: 'Failed to render logo.' });
+    }
+  }
 });
 
 export default router;
