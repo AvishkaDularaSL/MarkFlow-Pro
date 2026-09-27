@@ -61,17 +61,38 @@ export type WatermarkPosition =
 export type WatermarkBgMode = 'transparent' | 'white-card';
 
 export type OutputFormat = 'original' | 'png' | 'jpeg' | 'webp' | 'avif';
+export type CompressionMode = 'quality' | 'target_size';
+
+export interface ImageUpscaleConfig {
+  enabled: boolean;
+  mode: 'scale' | 'preset' | 'custom' | 'longest_edge';
+  scale?: number; // 2, 4, 8 etc.
+  preset?: string; // '1080p', '2k', '4k', 'instagram', 'ecommerce'
+  custom_width?: number;
+  custom_height?: number;
+  longest_edge?: number;
+  maintain_aspect_ratio?: boolean;
+  kernel?: 'lanczos3' | 'lanczos2' | 'cubic' | 'mitchell' | 'nearest';
+  sharpen?: boolean;
+  sharpen_amount?: number;
+  denoise?: boolean;
+  enhance_contrast?: boolean;
+}
 
 export interface WatermarkConfig {
   position: WatermarkPosition;
-  logo_size: number; // 1 to 100%, default 50% (Full image width at 100%)
-  opacity: number; // 5 to 100%
-  margin: number; // 0 to 100px
-  rotation: number; // -180 to 180 deg
+  logo_size: number;
+  opacity: number;
+  margin: number;
+  rotation: number;
   bg_mode?: WatermarkBgMode;
-  output_format?: OutputFormat; // 'original' | 'png' | 'jpeg' | 'webp' | 'avif'
-  quality?: number; // 1 to 100
-  webp_quality?: number; // legacy alias
+  output_format?: OutputFormat;
+  quality?: number;
+  webp_quality?: number;
+  compression_mode?: CompressionMode;
+  target_file_size_kb?: number;
+  watermark_enabled?: boolean;
+  upscale?: ImageUpscaleConfig;
 }
 
 export interface ProcessingJob {
@@ -80,7 +101,7 @@ export interface ProcessingJob {
   processing_session_id: string;
   business_id: string;
   business_name: string;
-  output_format?: OutputFormat;
+  output_format: OutputFormat;
   quality: number;
   opacity: number;
   position: WatermarkPosition;
@@ -109,43 +130,13 @@ export interface ProcessedImage {
   original_filename: string;
   output_path: string;
   output_filename: string;
-  output_format?: OutputFormat;
+  output_format: OutputFormat;
   file_size: number;
   original_file_size?: number;
   width: number;
   height: number;
   created_at: string;
   expires_at: string;
-}
-
-export interface SystemStats {
-  totalUsers: number;
-  activeUsers: number;
-  totalBusinesses: number;
-  totalJobs: number;
-  totalProcessedImages: number;
-  totalOriginalImages: number;
-  activeSessions: number;
-  storageBytes: number;
-  storageFormatted: string;
-}
-
-export interface SystemSetting {
-  id: string;
-  key: string;
-  value: string;
-  description: string;
-  updated_at: string;
-}
-
-export interface ActivityLog {
-  id: string;
-  user_id?: string;
-  user_email?: string;
-  action: string;
-  metadata?: Record<string, any>;
-  ip_address?: string;
-  created_at: string;
 }
 
 export interface AdminStats {
@@ -156,19 +147,21 @@ export interface AdminStats {
   activeSessions: number;
   databaseType: string;
   databaseSizeBytes: number;
+  databaseSizeFormatted?: string;
   storageUsageBytes: number;
-  supabaseConnected?: boolean;
-  supabaseRlsBlocked?: boolean;
-  supabaseProjectName?: string;
-  supabaseProjectId?: string;
-  supabaseUrl?: string;
+  sqliteFilePath?: string;
+  sqliteEngine?: string;
+  sqliteTotalRecords?: number;
+  sqliteTableCounts?: Record<string, number>;
 }
 
 export interface AuditLog {
   id: string;
   user_id?: string;
+  user_email?: string;
   action: string;
-  details?: any;
+  metadata?: any;
+  ip_address?: string;
   created_at: string;
 }
 
@@ -179,10 +172,11 @@ export interface SystemSettings {
   allowed_formats: string[];
   default_webp_quality: number;
   auto_cleanup_interval_minutes: number;
+  auth_session_lifetime_days?: number;
 }
 
 export interface DatabaseConfig {
-  type?: 'supabase' | 'postgresql' | 'cpanel_mysql' | 'mariadb' | 'internal_json';
+  type?: 'sqlite' | 'internal_json' | 'postgresql' | 'cpanel_mysql';
   host: string;
   port: number;
   database: string;
@@ -193,8 +187,4 @@ export interface DatabaseConfig {
   pool_size: number;
   status: 'connected' | 'idle' | 'error';
   last_tested?: string;
-  supabase_project_id?: string;
-  supabase_url?: string;
-  cpanel_instructions?: string;
 }
-

@@ -77,6 +77,14 @@ const AppContent: React.FC = () => {
           <ProcessImagesPage
             onNavigate={navigate}
             preSelectedBusinessId={viewParams.selectedBusinessId}
+            initialMode={viewParams.mode}
+          />
+        );
+      case 'upscale':
+        return (
+          <ProcessImagesPage
+            onNavigate={navigate}
+            initialMode="upscale"
           />
         );
       case 'history':

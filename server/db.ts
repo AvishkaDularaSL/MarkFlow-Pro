@@ -3,6 +3,18 @@ import path from 'path';
 import crypto from 'crypto';
 import bcrypt from 'bcryptjs';
 import { StorageService } from './services/StorageService';
+import {
+  getSqliteDb,
+  sqliteRun,
+  sqliteGet,
+  sqliteAll,
+  saveDatabaseImmediate,
+  sqliteIntegrityCheck,
+  sqliteVacuum,
+  sqliteCreateBackup,
+  getSqliteStats,
+  DB_FILE_PATH,
+} from './sqlite';
 
 import {
   User,
@@ -15,30 +27,7 @@ import {
   ActivityLog,
 } from './types';
 
-import {
-  supabase,
-  SUPABASE_PROJECT_NAME,
-  SUPABASE_PROJECT_ID,
-  SUPABASE_URL,
-  SUPABASE_KEY,
-  SUPABASE_SQL_SCHEMA,
-  testSupabaseConnection,
-} from './supabase';
-
-interface DatabaseSchema {
-  users: User[];
-  businesses: Business[];
-  processing_sessions: ProcessingSession[];
-  uploaded_images: UploadedImage[];
-  processing_jobs: ProcessingJob[];
-  processed_images: ProcessedImage[];
-  system_settings: SystemSetting[];
-  activity_logs: ActivityLog[];
-}
-
 const STORAGE_DIR = path.join(process.cwd(), 'storage');
-
-// Ensure binary and temporary storage directories exist
 const LOGOS_DIR = path.join(STORAGE_DIR, 'logos');
 const TEMP_DIR = path.join(STORAGE_DIR, 'temporary');
 const ZIPS_DIR = path.join(STORAGE_DIR, 'zips');
@@ -50,409 +39,103 @@ const ZIPS_DIR = path.join(STORAGE_DIR, 'zips');
 });
 
 class AppDatabase {
-  private data: DatabaseSchema;
-  private supabaseConnected = false;
-  private supabaseRlsBlocked = false;
+  private initialized = false;
 
   constructor() {
-    this.data = {
-      users: [],
-      businesses: [],
-      processing_sessions: [],
-      uploaded_images: [],
-      processing_jobs: [],
-      processed_images: [],
-      system_settings: this.getDefaultSystemSettings(),
-      activity_logs: [],
-    };
-
-    // Seed default admin in-memory first
-    this.seedDefaultAdmin();
-    // Connect and load everything from Supabase Cloud
-    this.initSupabase();
+    this.init();
   }
 
-  /**
-   * Helper to safely execute Supabase PromiseLikes asynchronously
-   */
-  private async safeSupabase(fn: () => PromiseLike<any>) {
+  public async init(): Promise<void> {
+    if (this.initialized) return;
     try {
-      const res: any = await fn();
-      if (res && res.error) {
-        const isRls =
-          res.error.code === '42501' ||
-          res.error.message?.toLowerCase().includes('row-level security') ||
-          res.error.message?.toLowerCase().includes('violates');
-        if (isRls) {
-          this.supabaseRlsBlocked = true;
-        }
-        console.warn('[Supabase API Notice]:', res.error.message);
-      }
-    } catch (err: any) {
-      console.warn('[Supabase Promise Exception]:', err?.message);
-    }
-  }
-
-  /**
-   * Connect to Supabase Cloud, load records into runtime state and sync default admin
-   */
-  private async initSupabase() {
-    try {
-      const status = await testSupabaseConnection();
-      this.supabaseConnected = status.connected;
-      this.supabaseRlsBlocked = Boolean(status.rlsBlocked);
-
-      if (status.connected) {
-        console.log(`[Supabase] Cloud database connected: ${SUPABASE_PROJECT_NAME} (${SUPABASE_PROJECT_ID})`);
-        await this.loadAllFromSupabase();
-        // Ensure default admin & settings exist in Supabase
-        await this.ensureAdminInSupabase();
-      } else {
-        console.log(`[Supabase] Cloud database initialized with endpoint ${SUPABASE_URL}`);
-      }
+      await getSqliteDb();
+      this.initialized = true;
+      this.seedDefaultAdmin();
+      this.seedDefaultSystemSettings();
+      console.log('[SQLite Embedded] Database initialized and ready.');
     } catch (err) {
-      console.warn('[Supabase] Initial connection notice:', err);
+      console.error('[SQLite Embedded] Initialization failed:', err);
     }
   }
 
-  /**
-   * Load all existing tables directly from Supabase Cloud into memory
-   */
-  public async loadAllFromSupabase() {
-    try {
-      // 1. Fetch Users
-      const { data: usersData, error: usersErr } = await supabase.from('users').select('*');
-      if (!usersErr && usersData && usersData.length > 0) {
-        this.data.users = usersData.map((u: any) => ({
-          id: u.id,
-          name: u.name,
-          email: u.email,
-          password: u.password,
-          role: u.role,
-          status: u.status,
-          created_at: u.created_at || new Date().toISOString(),
-          updated_at: u.updated_at || new Date().toISOString(),
-        }));
-      }
+  // ==========================================
+  // --- DEFAULT SEEDING ---
+  // ==========================================
 
-      // 2. Fetch Businesses & ensure logos are restored to disk / base64 persisted
-      const { data: bizData, error: bizErr } = await supabase.from('businesses').select('*');
-      if (!bizErr && bizData && bizData.length > 0) {
-        const loadedBusinesses: Business[] = [];
-        for (const b of bizData) {
-          const bizObj: Business = {
-            id: b.id,
-            user_id: b.user_id,
-            name: b.name,
-            description: b.description || '',
-            logo_path: b.logo_path,
-            logo_original_name: b.logo_original_name,
-            logo_mime: b.logo_mime || 'image/png',
-            created_at: b.created_at || new Date().toISOString(),
-            updated_at: b.updated_at || new Date().toISOString(),
-          };
+  private seedDefaultAdmin() {
+    const primaryAdminEmail = 'dularaavishka890@gmail.com';
+    const existing = sqliteGet<User>('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', [primaryAdminEmail]);
 
-          try {
-            const ensured = await StorageService.ensureBusinessLogo(bizObj);
-            bizObj.logo_path = ensured.filePath;
+    const salt = bcrypt.genSaltSync(10);
+    const hashedPassword = bcrypt.hashSync('Dulara@2001', salt);
+    const nowIso = new Date().toISOString();
 
-            // If Supabase record did not have a base64 data URI, update Supabase with durable base64
-            if (!b.logo_path || !b.logo_path.startsWith('data:')) {
-              this.safeSupabase(() =>
-                supabase.from('businesses').update({ logo_path: ensured.dataUrl }).eq('id', b.id)
-              );
-            }
-          } catch (logoErr) {
-            console.warn(`[Supabase Load] Logo materialization for ${b.name}:`, logoErr);
-          }
-
-          loadedBusinesses.push(bizObj);
-        }
-        this.data.businesses = loadedBusinesses;
-      }
-
-      // 3. Fetch Processing Jobs
-      const { data: jobsData, error: jobsErr } = await supabase
-        .from('processing_jobs')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(100);
-      if (!jobsErr && jobsData && jobsData.length > 0) {
-        this.data.processing_jobs = jobsData.map((j: any) => ({
-          id: j.id,
-          user_id: j.user_id,
-          processing_session_id: `sess_cloud_${j.id}`,
-          business_id: j.business_id,
-          business_name: j.business_name,
-          output_format: j.output_format || 'webp',
-          quality: j.quality || 80,
-          opacity: j.opacity || 50,
-          position: j.position || 'center',
-          logo_size: j.logo_size || 50,
-          margin: j.margin || 20,
-          rotation: j.rotation || 0,
-          total_images: j.total_images || 0,
-          completed_images: j.completed_images || 0,
-          failed_images: j.failed_images || 0,
-          status: j.status || 'completed',
-          error_message: j.error_message || undefined,
-          zip_filename: j.zip_filename || undefined,
-          created_at: j.created_at || new Date().toISOString(),
-          completed_at: j.completed_at || undefined,
-          expires_at: j.expires_at || new Date(Date.now() + 3600000).toISOString(),
-        }));
-      }
-
-      // 4. Fetch System Settings
-      const { data: settingsData, error: settingsErr } = await supabase.from('system_settings').select('*');
-      if (!settingsErr && settingsData && settingsData.length > 0) {
-        this.data.system_settings = settingsData.map((s: any) => ({
-          id: s.id,
-          key: s.key,
-          value: s.value,
-          description: s.description || '',
-          updated_at: s.updated_at || new Date().toISOString(),
-        }));
-      }
-
-      // 5. Fetch Activity Logs
-      const { data: logsData, error: logsErr } = await supabase
-        .from('activity_logs')
-        .select('*')
-        .order('created_at', { ascending: false })
-        .limit(100);
-      if (!logsErr && logsData && logsData.length > 0) {
-        this.data.activity_logs = logsData.map((l: any) => ({
-          id: l.id,
-          user_id: l.user_id,
-          user_email: l.user_email,
-          action: l.action,
-          metadata: l.metadata || {},
-          ip_address: l.ip_address,
-          created_at: l.created_at || new Date().toISOString(),
-        }));
-      }
-    } catch (err) {
-      console.warn('[Supabase load error]:', err);
+    if (!existing) {
+      sqliteRun(
+        'INSERT INTO users (id, name, email, password, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+        ['user_admin_primary', 'Dulara Avishka', primaryAdminEmail, hashedPassword, 'admin', 'active', nowIso, nowIso]
+      );
+      console.log(`[SQLite Embedded] Default admin seeded: ${primaryAdminEmail}`);
+    } else {
+      sqliteRun(
+        'UPDATE users SET password = ?, role = ?, status = ?, updated_at = ? WHERE LOWER(email) = LOWER(?)',
+        [hashedPassword, 'admin', 'active', nowIso, primaryAdminEmail]
+      );
     }
+    saveDatabaseImmediate();
   }
 
-  private getDefaultSystemSettings(): SystemSetting[] {
-    const now = new Date().toISOString();
-    return [
+  private seedDefaultSystemSettings() {
+    const defaultSettings = [
       {
         id: 'setting_1',
         key: 'session_expiry_minutes',
         value: '60',
         description: 'Temporary upload session lifetime in minutes',
-        updated_at: now,
       },
       {
         id: 'setting_2',
         key: 'max_images_per_batch',
         value: '100',
         description: 'Maximum number of images allowed per batch conversion',
-        updated_at: now,
       },
       {
         id: 'setting_3',
         key: 'max_image_size_mb',
         value: '50',
         description: 'Maximum single image file size in Megabytes',
-        updated_at: now,
       },
       {
         id: 'setting_4',
         key: 'default_webp_quality',
         value: '80',
         description: 'Default quality parameter for WebP conversion (1-100)',
-        updated_at: now,
       },
       {
         id: 'setting_5',
         key: 'auto_cleanup_interval_minutes',
         value: '5',
         description: 'Frequency of automated temporary storage cleanup worker',
-        updated_at: now,
+      },
+      {
+        id: 'setting_6',
+        key: 'auth_session_lifetime_days',
+        value: '2',
+        description: 'User login JWT authentication session duration in days',
       },
     ];
-  }
 
-  /**
-   * Seed admin user in runtime
-   */
-  private seedDefaultAdmin() {
-    const primaryAdminEmail = 'dularaavishka890@gmail.com';
-    const existingAdmin = this.data.users.find(
-      (u) => u.email.toLowerCase() === primaryAdminEmail.toLowerCase()
-    );
-
-    const salt = bcrypt.genSaltSync(10);
-    const hashedPassword = bcrypt.hashSync('Dulara@2001', salt);
-
-    if (!existingAdmin) {
-      this.data.users.push({
-        id: 'user_admin_primary',
-        name: 'Dulara Avishka',
-        email: primaryAdminEmail,
-        password: hashedPassword,
-        role: 'admin',
-        status: 'active',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      });
-    } else {
-      existingAdmin.password = hashedPassword;
-      existingAdmin.role = 'admin';
-      existingAdmin.status = 'active';
-    }
-  }
-
-  /**
-   * Ensure default admin & settings are present in Supabase Cloud
-   */
-  private async ensureAdminInSupabase() {
-    const admin = this.data.users.find((u) => u.email.toLowerCase() === 'dularaavishka890@gmail.com');
-    if (admin) {
-      this.safeSupabase(() =>
-        supabase.from('users').upsert({
-          id: admin.id,
-          name: admin.name,
-          email: admin.email,
-          password: admin.password,
-          role: 'admin',
-          status: 'active',
-          created_at: admin.created_at,
-          updated_at: new Date().toISOString(),
-        }, { onConflict: 'email' })
-      );
-    }
-
-    if (this.data.system_settings.length > 0) {
-      this.safeSupabase(() =>
-        supabase.from('system_settings').upsert(this.data.system_settings, { onConflict: 'id' })
-      );
-    }
-  }
-
-  /**
-   * Sync active records to Supabase PostgreSQL tables in background
-   */
-  public async syncToSupabase(): Promise<{ success: boolean; error?: string; rlsBlocked?: boolean }> {
-    try {
-      // 1. Sync users
-      if (this.data.users.length > 0) {
-        const usersToSync = this.data.users.map((u) => ({
-          id: u.id,
-          name: u.name,
-          email: u.email,
-          password: u.password,
-          role: u.role,
-          status: u.status,
-          created_at: u.created_at,
-          updated_at: u.updated_at,
-        }));
-        const { error: userErr } = await supabase.from('users').upsert(usersToSync, { onConflict: 'id' });
-        if (userErr) {
-          const isRls = userErr.code === '42501' || userErr.message?.toLowerCase().includes('row-level security') || userErr.message?.toLowerCase().includes('violates');
-          this.supabaseRlsBlocked = isRls;
-          return {
-            success: false,
-            rlsBlocked: isRls,
-            error: isRls
-              ? 'Supabase Row-Level Security (RLS) is active on public.users. Run the RLS fix script in Supabase SQL Editor to enable writing.'
-              : userErr.message,
-          };
-        }
+    const nowIso = new Date().toISOString();
+    defaultSettings.forEach((setting) => {
+      const existing = sqliteGet('SELECT id FROM system_settings WHERE key = ?', [setting.key]);
+      if (!existing) {
+        sqliteRun(
+          'INSERT INTO system_settings (id, key, value, description, updated_at) VALUES (?, ?, ?, ?, ?)',
+          [setting.id, setting.key, setting.value, setting.description, nowIso]
+        );
       }
-
-      // 2. Sync businesses
-      if (this.data.businesses.length > 0) {
-        const businessesToSync = this.data.businesses.map((b) => ({
-          id: b.id,
-          user_id: b.user_id,
-          name: b.name,
-          description: b.description || '',
-          logo_path: b.logo_path,
-          logo_original_name: b.logo_original_name,
-          logo_mime: b.logo_mime,
-          created_at: b.created_at,
-          updated_at: b.updated_at,
-        }));
-        const { error: bizErr } = await supabase.from('businesses').upsert(businessesToSync, { onConflict: 'id' });
-        if (bizErr) {
-          const isRls = bizErr.code === '42501' || bizErr.message?.toLowerCase().includes('row-level security') || bizErr.message?.toLowerCase().includes('violates');
-          this.supabaseRlsBlocked = isRls;
-          return {
-            success: false,
-            rlsBlocked: isRls,
-            error: isRls
-              ? 'Supabase Row-Level Security (RLS) is active on public.businesses. Run the RLS fix script in Supabase SQL Editor to enable writing.'
-              : bizErr.message,
-          };
-        }
-      }
-
-      // 3. Sync processing jobs
-      if (this.data.processing_jobs.length > 0) {
-        const jobsToSync = this.data.processing_jobs.slice(0, 50).map((j) => ({
-          id: j.id,
-          user_id: j.user_id,
-          business_id: j.business_id,
-          business_name: j.business_name,
-          output_format: j.output_format,
-          quality: j.quality,
-          opacity: j.opacity,
-          position: j.position,
-          logo_size: j.logo_size,
-          margin: j.margin,
-          rotation: j.rotation,
-          status: j.status,
-          total_images: j.total_images,
-          completed_images: j.completed_images,
-          failed_images: j.failed_images,
-          error_message: j.error_message || null,
-          zip_filename: j.zip_filename || null,
-          created_at: j.created_at,
-          completed_at: j.completed_at || null,
-          expires_at: j.expires_at,
-        }));
-        const { error: jobErr } = await supabase.from('processing_jobs').upsert(jobsToSync, { onConflict: 'id' });
-        if (jobErr) {
-          const isRls = jobErr.code === '42501' || jobErr.message?.toLowerCase().includes('row-level security') || jobErr.message?.toLowerCase().includes('violates');
-          this.supabaseRlsBlocked = isRls;
-          return {
-            success: false,
-            rlsBlocked: isRls,
-            error: isRls
-              ? 'Supabase Row-Level Security (RLS) is active on public.processing_jobs. Run the RLS fix script in Supabase SQL Editor to enable writing.'
-              : jobErr.message,
-          };
-        }
-      }
-
-      // 4. Sync settings
-      if (this.data.system_settings.length > 0) {
-        const { error: setErr } = await supabase.from('system_settings').upsert(this.data.system_settings, { onConflict: 'id' });
-        if (setErr) {
-          const isRls = setErr.code === '42501' || setErr.message?.toLowerCase().includes('row-level security') || setErr.message?.toLowerCase().includes('violates');
-          this.supabaseRlsBlocked = isRls;
-          return {
-            success: false,
-            rlsBlocked: isRls,
-            error: isRls
-              ? 'Supabase Row-Level Security (RLS) is active on public.system_settings. Run the RLS fix script in Supabase SQL Editor to enable writing.'
-              : setErr.message,
-          };
-        }
-      }
-
-      this.supabaseConnected = true;
-      this.supabaseRlsBlocked = false;
-      return { success: true };
-    } catch (err: any) {
-      return { success: false, error: err?.message || 'Sync encountered an error' };
-    }
+    });
+    saveDatabaseImmediate();
   }
 
   // ==========================================
@@ -460,17 +143,17 @@ class AppDatabase {
   // ==========================================
 
   getUsers(): User[] {
-    return this.data.users;
+    return sqliteAll<User>('SELECT * FROM users ORDER BY created_at DESC');
   }
 
   getUserById(id: string): User | undefined {
-    return this.data.users.find((u) => u.id === id);
+    return sqliteGet<User>('SELECT * FROM users WHERE id = ?', [id]);
   }
 
   getUserByEmail(email: string): User | undefined {
     if (!email) return undefined;
     const clean = email.trim().toLowerCase();
-    return this.data.users.find((u) => u.email.trim().toLowerCase() === clean);
+    return sqliteGet<User>('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', [clean]);
   }
 
   createUser(user: Omit<User, 'id' | 'created_at' | 'updated_at'>): User {
@@ -480,20 +163,19 @@ class AppDatabase {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    this.data.users.push(newUser);
 
-    // Save directly to Supabase
-    this.safeSupabase(() =>
-      supabase.from('users').insert({
-        id: newUser.id,
-        name: newUser.name,
-        email: newUser.email,
-        password: newUser.password,
-        role: newUser.role,
-        status: newUser.status,
-        created_at: newUser.created_at,
-        updated_at: newUser.updated_at,
-      })
+    sqliteRun(
+      'INSERT INTO users (id, name, email, password, role, status, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        newUser.id,
+        newUser.name,
+        newUser.email,
+        newUser.password,
+        newUser.role,
+        newUser.status,
+        newUser.created_at,
+        newUser.updated_at,
+      ]
     );
 
     this.logActivity({
@@ -506,52 +188,66 @@ class AppDatabase {
   }
 
   updateUser(id: string, updates: Partial<User>): User | undefined {
-    const idx = this.data.users.findIndex((u) => u.id === id);
-    if (idx === -1) return undefined;
-    const nowIso = new Date().toISOString();
-    this.data.users[idx] = {
-      ...this.data.users[idx],
+    const existing = this.getUserById(id);
+    if (!existing) return undefined;
+
+    const updatedUser: User = {
+      ...existing,
       ...updates,
-      updated_at: nowIso,
+      updated_at: new Date().toISOString(),
     };
 
-    // Update in Supabase
-    this.safeSupabase(() =>
-      supabase.from('users').update({
-        ...updates,
-        updated_at: nowIso,
-      }).eq('id', id)
+    sqliteRun(
+      'UPDATE users SET name = ?, email = ?, password = ?, role = ?, status = ?, updated_at = ? WHERE id = ?',
+      [
+        updatedUser.name,
+        updatedUser.email,
+        updatedUser.password,
+        updatedUser.role,
+        updatedUser.status,
+        updatedUser.updated_at,
+        id,
+      ]
     );
 
-    return this.data.users[idx];
+    return updatedUser;
   }
 
   deleteUser(id: string): boolean {
-    const idx = this.data.users.findIndex((u) => u.id === id);
-    if (idx === -1) return false;
-    const deleted = this.data.users.splice(idx, 1)[0];
+    const user = this.getUserById(id);
+    if (!user) return false;
 
-    // Cascade delete user's businesses, sessions, images, jobs
-    const userBusinesses = this.data.businesses.filter((b) => b.user_id === id);
-    userBusinesses.forEach((b) => {
-      if (fs.existsSync(b.logo_path)) {
+    // Delete associated physical logo files
+    const businesses = this.getBusinessesByUserId(id);
+    businesses.forEach((b) => {
+      if (b.logo_path && fs.existsSync(b.logo_path)) {
         try {
           fs.unlinkSync(b.logo_path);
         } catch (_) {}
       }
     });
-    this.data.businesses = this.data.businesses.filter((b) => b.user_id !== id);
-    this.data.processing_sessions = this.data.processing_sessions.filter((s) => s.user_id !== id);
-    this.data.uploaded_images = this.data.uploaded_images.filter((img) => img.user_id !== id);
-    this.data.processing_jobs = this.data.processing_jobs.filter((j) => j.user_id !== id);
-    this.data.processed_images = this.data.processed_images.filter((p) => p.user_id !== id);
 
-    // Delete in Supabase (Cascades to businesses & jobs)
-    this.safeSupabase(() => supabase.from('users').delete().eq('id', id));
+    // Delete processing files
+    const jobs = this.getProcessingJobsByUserId(id);
+    jobs.forEach((j) => {
+      if (j.zip_path && fs.existsSync(j.zip_path)) {
+        try {
+          fs.unlinkSync(j.zip_path);
+        } catch (_) {}
+      }
+    });
+
+    // Foreign keys with CASCADE will handle table rows
+    sqliteRun('DELETE FROM businesses WHERE user_id = ?', [id]);
+    sqliteRun('DELETE FROM processing_sessions WHERE user_id = ?', [id]);
+    sqliteRun('DELETE FROM uploaded_images WHERE user_id = ?', [id]);
+    sqliteRun('DELETE FROM processing_jobs WHERE user_id = ?', [id]);
+    sqliteRun('DELETE FROM processed_images WHERE user_id = ?', [id]);
+    sqliteRun('DELETE FROM users WHERE id = ?', [id]);
 
     this.logActivity({
       action: 'USER_DELETED',
-      metadata: { userId: id, email: deleted.email },
+      metadata: { userId: id, email: user.email },
     });
     return true;
   }
@@ -561,82 +257,18 @@ class AppDatabase {
   // ==========================================
 
   getBusinessesByUserId(userId: string): Business[] {
-    return this.data.businesses.filter((b) => b.user_id === userId);
+    return sqliteAll<Business>('SELECT * FROM businesses WHERE user_id = ? ORDER BY created_at DESC', [userId]);
   }
 
   getAllBusinesses(): Business[] {
-    return this.data.businesses;
+    return sqliteAll<Business>('SELECT * FROM businesses ORDER BY created_at DESC');
   }
 
   getBusinessById(id: string, userId?: string): Business | undefined {
-    return this.data.businesses.find(
-      (b) => b.id === id && (!userId || b.user_id === userId)
-    );
-  }
-
-  /**
-   * Directly sync or upsert a business brand to Supabase PostgreSQL table
-   */
-  public async syncBusinessToSupabase(biz: Business): Promise<{ success: boolean; error?: string; rlsBlocked?: boolean }> {
-    try {
-      // 1. Ensure user is in Supabase users table (due to foreign key constraint)
-      const user = this.getUserById(biz.user_id);
-      if (user) {
-        await supabase.from('users').upsert({
-          id: user.id,
-          name: user.name,
-          email: user.email,
-          password: user.password,
-          role: user.role,
-          status: user.status,
-          created_at: user.created_at,
-          updated_at: user.updated_at,
-        }, { onConflict: 'id' });
-      }
-
-      // 2. Prepare durable base64 logo data
-      let durableLogoPath = biz.logo_path;
-      try {
-        const ensured = await StorageService.ensureBusinessLogo(biz);
-        durableLogoPath = ensured.dataUrl;
-        biz.logo_path = ensured.filePath;
-      } catch (e) {
-        console.warn(`Could not prepare base64 for business ${biz.name}:`, e);
-      }
-
-      // 3. Insert or Upsert into businesses table
-      const { error: insErr } = await supabase.from('businesses').upsert({
-        id: biz.id,
-        user_id: biz.user_id,
-        name: biz.name,
-        description: biz.description || '',
-        logo_path: durableLogoPath,
-        logo_original_name: biz.logo_original_name,
-        logo_mime: biz.logo_mime || 'image/png',
-        created_at: biz.created_at,
-        updated_at: biz.updated_at,
-      }, { onConflict: 'id' });
-
-      if (insErr) {
-        const isRls =
-          insErr.code === '42501' ||
-          insErr.message?.toLowerCase().includes('row-level security') ||
-          insErr.message?.toLowerCase().includes('violates');
-        if (isRls) {
-          this.supabaseRlsBlocked = true;
-        }
-        console.warn(`[Supabase Business Sync]: ${insErr.message} (Code: ${insErr.code})`);
-        return { success: false, error: insErr.message, rlsBlocked: isRls };
-      }
-
-      this.supabaseConnected = true;
-      this.supabaseRlsBlocked = false;
-      console.log(`[Supabase] Business "${biz.name}" successfully saved to cloud database.`);
-      return { success: true };
-    } catch (err: any) {
-      console.warn('[Supabase Business Sync Exception]:', err?.message);
-      return { success: false, error: err?.message };
+    if (userId) {
+      return sqliteGet<Business>('SELECT * FROM businesses WHERE id = ? AND user_id = ?', [id, userId]);
     }
+    return sqliteGet<Business>('SELECT * FROM businesses WHERE id = ?', [id]);
   }
 
   createBusiness(business: Omit<Business, 'id' | 'created_at' | 'updated_at'>): Business {
@@ -646,10 +278,21 @@ class AppDatabase {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
-    this.data.businesses.push(newBiz);
 
-    // Sync to Supabase in background
-    this.syncBusinessToSupabase(newBiz);
+    sqliteRun(
+      'INSERT INTO businesses (id, user_id, name, description, logo_path, logo_original_name, logo_mime, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        newBiz.id,
+        newBiz.user_id,
+        newBiz.name,
+        newBiz.description || '',
+        newBiz.logo_path,
+        newBiz.logo_original_name,
+        newBiz.logo_mime,
+        newBiz.created_at,
+        newBiz.updated_at,
+      ]
+    );
 
     this.logActivity({
       user_id: newBiz.user_id,
@@ -660,73 +303,53 @@ class AppDatabase {
   }
 
   updateBusiness(id: string, updates: Partial<Business>, userId?: string): Business | undefined {
-    const idx = this.data.businesses.findIndex((b) => b.id === id && (!userId || b.user_id === userId));
-    if (idx === -1) return undefined;
-    const nowIso = new Date().toISOString();
-    this.data.businesses[idx] = {
-      ...this.data.businesses[idx],
+    const existing = this.getBusinessById(id, userId);
+    if (!existing) return undefined;
+
+    const updatedBiz: Business = {
+      ...existing,
       ...updates,
-      updated_at: nowIso,
+      updated_at: new Date().toISOString(),
     };
 
-    // Sync to Supabase
-    this.syncBusinessToSupabase(this.data.businesses[idx]);
+    sqliteRun(
+      'UPDATE businesses SET name = ?, description = ?, logo_path = ?, logo_original_name = ?, logo_mime = ?, updated_at = ? WHERE id = ?',
+      [
+        updatedBiz.name,
+        updatedBiz.description || '',
+        updatedBiz.logo_path,
+        updatedBiz.logo_original_name,
+        updatedBiz.logo_mime,
+        updatedBiz.updated_at,
+        id,
+      ]
+    );
 
     this.logActivity({
-      user_id: this.data.businesses[idx].user_id,
+      user_id: updatedBiz.user_id,
       action: 'BUSINESS_UPDATED',
-      metadata: { businessId: id, name: this.data.businesses[idx].name },
+      metadata: { businessId: id, name: updatedBiz.name },
     });
-    return this.data.businesses[idx];
+    return updatedBiz;
   }
 
   deleteBusiness(id: string, userId?: string): boolean {
-    const idx = this.data.businesses.findIndex((b) => b.id === id && (!userId || b.user_id === userId));
-    if (idx === -1) return false;
-    const biz = this.data.businesses[idx];
+    const biz = this.getBusinessById(id, userId);
+    if (!biz) return false;
+
     if (biz.logo_path && fs.existsSync(biz.logo_path)) {
       try {
         fs.unlinkSync(biz.logo_path);
       } catch (_) {}
     }
-    this.data.businesses.splice(idx, 1);
 
-    // Delete in Supabase
-    this.safeSupabase(() => supabase.from('businesses').delete().eq('id', id));
+    sqliteRun('DELETE FROM businesses WHERE id = ?', [id]);
 
     this.logActivity({
       user_id: userId || biz.user_id,
       action: 'BUSINESS_DELETED',
       metadata: { businessId: id, name: biz.name },
     });
-    return true;
-  }
-
-  deleteProcessingJob(id: string, userId?: string): boolean {
-    const idx = this.data.processing_jobs.findIndex((j) => j.id === id && (!userId || j.user_id === userId));
-    if (idx === -1) return false;
-    const job = this.data.processing_jobs[idx];
-    if (job.zip_path && fs.existsSync(job.zip_path)) {
-      try {
-        fs.unlinkSync(job.zip_path);
-      } catch (_) {}
-    }
-    this.data.processing_jobs.splice(idx, 1);
-
-    // Also remove processed images
-    const removedImages = this.data.processed_images.filter((p) => p.processing_job_id === id);
-    removedImages.forEach((p) => {
-      if (fs.existsSync(p.output_path)) {
-        try {
-          fs.unlinkSync(p.output_path);
-        } catch (_) {}
-      }
-    });
-    this.data.processed_images = this.data.processed_images.filter((p) => p.processing_job_id !== id);
-
-    // Delete in Supabase
-    this.safeSupabase(() => supabase.from('processing_jobs').delete().eq('id', id));
-
     return true;
   }
 
@@ -744,25 +367,32 @@ class AppDatabase {
       updated_at: nowIso,
       expires_at: expiresAt,
     };
-    this.data.processing_sessions.push(session);
+
+    sqliteRun(
+      'INSERT INTO processing_sessions (id, user_id, created_at, updated_at, expires_at) VALUES (?, ?, ?, ?, ?)',
+      [session.id, session.user_id, session.created_at, session.updated_at, session.expires_at]
+    );
     return session;
   }
 
   getProcessingSession(id: string, userId?: string): ProcessingSession | undefined {
-    const sess = this.data.processing_sessions.find((s) => s.id === id);
-    if (!sess) return undefined;
-    if (userId && sess.user_id !== userId) return undefined;
-    return sess;
+    if (userId) {
+      return sqliteGet<ProcessingSession>('SELECT * FROM processing_sessions WHERE id = ? AND user_id = ?', [id, userId]);
+    }
+    return sqliteGet<ProcessingSession>('SELECT * FROM processing_sessions WHERE id = ?', [id]);
+  }
+
+  getProcessingSessionsByUserId(userId: string): ProcessingSession[] {
+    return sqliteAll<ProcessingSession>('SELECT * FROM processing_sessions WHERE user_id = ? ORDER BY created_at DESC', [userId]);
   }
 
   touchProcessingSession(id: string, lifetimeSeconds = 3600): void {
-    const sess = this.data.processing_sessions.find((s) => s.id === id);
-    if (sess) {
-      const nowIso = new Date().toISOString();
-      const newExpires = new Date(Date.now() + lifetimeSeconds * 1000).toISOString();
-      sess.updated_at = nowIso;
-      sess.expires_at = newExpires;
-    }
+    const nowIso = new Date().toISOString();
+    const newExpires = new Date(Date.now() + lifetimeSeconds * 1000).toISOString();
+    sqliteRun(
+      'UPDATE processing_sessions SET updated_at = ?, expires_at = ? WHERE id = ?',
+      [nowIso, newExpires, id]
+    );
   }
 
   // ==========================================
@@ -775,34 +405,50 @@ class AppDatabase {
       id: `img_${crypto.randomUUID()}`,
       created_at: new Date().toISOString(),
     };
-    this.data.uploaded_images.push(newImg);
+
+    sqliteRun(
+      'INSERT INTO uploaded_images (id, processing_session_id, user_id, original_name, temporary_path, mime_type, file_size, width, height, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        newImg.id,
+        newImg.processing_session_id,
+        newImg.user_id,
+        newImg.original_name,
+        newImg.temporary_path,
+        newImg.mime_type,
+        newImg.file_size,
+        newImg.width || 0,
+        newImg.height || 0,
+        newImg.created_at,
+      ]
+    );
     return newImg;
   }
 
   getUploadedImagesBySession(sessionId: string, userId: string): UploadedImage[] {
-    return this.data.uploaded_images.filter(
-      (img) => img.processing_session_id === sessionId && img.user_id === userId
+    return sqliteAll<UploadedImage>(
+      'SELECT * FROM uploaded_images WHERE processing_session_id = ? AND user_id = ? ORDER BY created_at ASC',
+      [sessionId, userId]
     );
   }
 
   getUploadedImageById(id: string, userId?: string): UploadedImage | undefined {
-    return this.data.uploaded_images.find(
-      (img) => img.id === id && (!userId || img.user_id === userId)
-    );
+    if (userId) {
+      return sqliteGet<UploadedImage>('SELECT * FROM uploaded_images WHERE id = ? AND user_id = ?', [id, userId]);
+    }
+    return sqliteGet<UploadedImage>('SELECT * FROM uploaded_images WHERE id = ?', [id]);
   }
 
   removeUploadedImage(id: string, userId: string): boolean {
-    const idx = this.data.uploaded_images.findIndex(
-      (img) => img.id === id && img.user_id === userId
-    );
-    if (idx === -1) return false;
-    const img = this.data.uploaded_images[idx];
+    const img = this.getUploadedImageById(id, userId);
+    if (!img) return false;
+
     if (img.temporary_path && fs.existsSync(img.temporary_path)) {
       try {
         fs.unlinkSync(img.temporary_path);
       } catch (_) {}
     }
-    this.data.uploaded_images.splice(idx, 1);
+
+    sqliteRun('DELETE FROM uploaded_images WHERE id = ? AND user_id = ?', [id, userId]);
     return true;
   }
 
@@ -826,6 +472,7 @@ class AppDatabase {
     expires_at?: string;
   }): ProcessingJob {
     const newJob: ProcessingJob = {
+      id: `job_${crypto.randomUUID()}`,
       user_id: job.user_id,
       processing_session_id: job.processing_session_id,
       business_id: job.business_id,
@@ -844,67 +491,75 @@ class AppDatabase {
       error_message: job.error_message,
       zip_path: job.zip_path,
       zip_filename: job.zip_filename,
+      created_at: new Date().toISOString(),
       completed_at: job.completed_at,
       expires_at: job.expires_at || new Date(Date.now() + 3600000).toISOString(),
-      id: `job_${crypto.randomUUID()}`,
-      created_at: new Date().toISOString(),
     };
-    this.data.processing_jobs.unshift(newJob);
 
-    // Save directly to Supabase
-    this.safeSupabase(() =>
-      supabase.from('processing_jobs').insert({
-        id: newJob.id,
-        user_id: newJob.user_id,
-        business_id: newJob.business_id,
-        business_name: newJob.business_name,
-        output_format: newJob.output_format,
-        quality: newJob.quality,
-        opacity: newJob.opacity,
-        position: newJob.position,
-        logo_size: newJob.logo_size,
-        margin: newJob.margin,
-        rotation: newJob.rotation,
-        status: newJob.status,
-        total_images: newJob.total_images,
-        completed_images: newJob.completed_images,
-        failed_images: newJob.failed_images,
-        error_message: newJob.error_message || null,
-        zip_filename: newJob.zip_filename || null,
-        created_at: newJob.created_at,
-        completed_at: newJob.completed_at || null,
-        expires_at: newJob.expires_at,
-      })
+    sqliteRun(
+      `INSERT INTO processing_jobs (
+        id, user_id, processing_session_id, business_id, business_name,
+        output_format, quality, opacity, position, logo_size, margin, rotation,
+        status, total_images, completed_images, failed_images, error_message,
+        zip_path, zip_filename, created_at, completed_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        newJob.id,
+        newJob.user_id,
+        newJob.processing_session_id,
+        newJob.business_id,
+        newJob.business_name,
+        newJob.output_format,
+        newJob.quality,
+        newJob.opacity,
+        newJob.position,
+        newJob.logo_size,
+        newJob.margin,
+        newJob.rotation,
+        newJob.status,
+        newJob.total_images,
+        newJob.completed_images,
+        newJob.failed_images,
+        newJob.error_message || null,
+        newJob.zip_path || null,
+        newJob.zip_filename || null,
+        newJob.created_at,
+        newJob.completed_at || null,
+        newJob.expires_at,
+      ]
     );
 
     return newJob;
   }
 
   updateProcessingJob(id: string, updates: Partial<ProcessingJob>): ProcessingJob | undefined {
-    const idx = this.data.processing_jobs.findIndex((j) => j.id === id);
-    if (idx === -1) return undefined;
-    this.data.processing_jobs[idx] = {
-      ...this.data.processing_jobs[idx],
-      ...updates,
-    };
+    const existing = this.getProcessingJobById(id);
+    if (!existing) return undefined;
 
-    // Update in Supabase
-    this.safeSupabase(() =>
-      supabase.from('processing_jobs').update({
-        status: this.data.processing_jobs[idx].status,
-        completed_images: this.data.processing_jobs[idx].completed_images,
-        failed_images: this.data.processing_jobs[idx].failed_images,
-        error_message: this.data.processing_jobs[idx].error_message || null,
-        zip_filename: this.data.processing_jobs[idx].zip_filename || null,
-        completed_at: this.data.processing_jobs[idx].completed_at || null,
-      }).eq('id', id)
+    const merged = { ...existing, ...updates };
+
+    sqliteRun(
+      `UPDATE processing_jobs SET
+        status = ?, completed_images = ?, failed_images = ?,
+        error_message = ?, zip_path = ?, zip_filename = ?, completed_at = ?
+      WHERE id = ?`,
+      [
+        merged.status,
+        merged.completed_images,
+        merged.failed_images,
+        merged.error_message || null,
+        merged.zip_path || null,
+        merged.zip_filename || null,
+        merged.completed_at || null,
+        id,
+      ]
     );
 
-    return this.data.processing_jobs[idx];
+    return merged;
   }
 
   getProcessingJobsByUserId(userId: string): ProcessingJob[] {
-    return this.data.processing_jobs.filter((j) => j.user_id === userId);
+    return sqliteAll<ProcessingJob>('SELECT * FROM processing_jobs WHERE user_id = ? ORDER BY created_at DESC', [userId]);
   }
 
   getProcessingJobsByUser(userId: string): ProcessingJob[] {
@@ -912,17 +567,42 @@ class AppDatabase {
   }
 
   getAllProcessingJobs(): ProcessingJob[] {
-    return this.data.processing_jobs;
+    return sqliteAll<ProcessingJob>('SELECT * FROM processing_jobs ORDER BY created_at DESC LIMIT 200');
   }
 
   getProcessingJobById(id: string, userId?: string): ProcessingJob | undefined {
-    return this.data.processing_jobs.find(
-      (j) => j.id === id && (!userId || j.user_id === userId)
-    );
+    if (userId) {
+      return sqliteGet<ProcessingJob>('SELECT * FROM processing_jobs WHERE id = ? AND user_id = ?', [id, userId]);
+    }
+    return sqliteGet<ProcessingJob>('SELECT * FROM processing_jobs WHERE id = ?', [id]);
   }
 
   getProcessingJob(id: string, userId?: string): ProcessingJob | undefined {
     return this.getProcessingJobById(id, userId);
+  }
+
+  deleteProcessingJob(id: string, userId?: string): boolean {
+    const job = this.getProcessingJobById(id, userId);
+    if (!job) return false;
+
+    if (job.zip_path && fs.existsSync(job.zip_path)) {
+      try {
+        fs.unlinkSync(job.zip_path);
+      } catch (_) {}
+    }
+
+    const processedImages = this.getProcessedImagesByJobId(id);
+    processedImages.forEach((p) => {
+      if (p.output_path && fs.existsSync(p.output_path)) {
+        try {
+          fs.unlinkSync(p.output_path);
+        } catch (_) {}
+      }
+    });
+
+    sqliteRun('DELETE FROM processed_images WHERE processing_job_id = ?', [id]);
+    sqliteRun('DELETE FROM processing_jobs WHERE id = ?', [id]);
+    return true;
   }
 
   // ==========================================
@@ -935,13 +615,44 @@ class AppDatabase {
       id: `proc_${crypto.randomUUID()}`,
       created_at: new Date().toISOString(),
     };
-    this.data.processed_images.push(newImg);
+
+    sqliteRun(
+      `INSERT INTO processed_images (
+        id, processing_job_id, original_image_id, user_id, original_filename,
+        output_path, output_filename, output_format, file_size, original_file_size,
+        width, height, created_at, expires_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        newImg.id,
+        newImg.processing_job_id,
+        newImg.original_image_id || '',
+        newImg.user_id,
+        newImg.original_filename,
+        newImg.output_path,
+        newImg.output_filename,
+        newImg.output_format,
+        newImg.file_size,
+        newImg.original_file_size || 0,
+        newImg.width || 0,
+        newImg.height || 0,
+        newImg.created_at,
+        newImg.expires_at,
+      ]
+    );
+
     return newImg;
   }
 
   getProcessedImagesByJobId(jobId: string, userId?: string): ProcessedImage[] {
-    return this.data.processed_images.filter(
-      (p) => p.processing_job_id === jobId && (!userId || p.user_id === userId)
+    if (userId) {
+      return sqliteAll<ProcessedImage>(
+        'SELECT * FROM processed_images WHERE processing_job_id = ? AND user_id = ? ORDER BY created_at ASC',
+        [jobId, userId]
+      );
+    }
+    return sqliteAll<ProcessedImage>(
+      'SELECT * FROM processed_images WHERE processing_job_id = ? ORDER BY created_at ASC',
+      [jobId]
     );
   }
 
@@ -950,9 +661,10 @@ class AppDatabase {
   }
 
   getProcessedImageById(id: string, userId?: string): ProcessedImage | undefined {
-    return this.data.processed_images.find(
-      (p) => p.id === id && (!userId || p.user_id === userId)
-    );
+    if (userId) {
+      return sqliteGet<ProcessedImage>('SELECT * FROM processed_images WHERE id = ? AND user_id = ?', [id, userId]);
+    }
+    return sqliteGet<ProcessedImage>('SELECT * FROM processed_images WHERE id = ?', [id]);
   }
 
   // ==========================================
@@ -960,15 +672,16 @@ class AppDatabase {
   // ==========================================
 
   getSettings(): Record<string, string> {
+    const list = sqliteAll<SystemSetting>('SELECT * FROM system_settings');
     const result: Record<string, string> = {};
-    this.data.system_settings.forEach((s) => {
+    list.forEach((s) => {
       result[s.key] = s.value;
     });
     return result;
   }
 
   getSetting(key: string, defaultValue = ''): string {
-    const s = this.data.system_settings.find((item) => item.key === key);
+    const s = sqliteGet<SystemSetting>('SELECT value FROM system_settings WHERE key = ?', [key]);
     return s ? s.value : defaultValue;
   }
 
@@ -977,30 +690,15 @@ class AppDatabase {
   }
 
   updateSetting(key: string, value: string): void {
-    const idx = this.data.system_settings.findIndex((s) => s.key === key);
+    const existing = sqliteGet<SystemSetting>('SELECT id FROM system_settings WHERE key = ?', [key]);
     const nowIso = new Date().toISOString();
-    if (idx !== -1) {
-      this.data.system_settings[idx].value = value;
-      this.data.system_settings[idx].updated_at = nowIso;
-      // Upsert in Supabase
-      this.safeSupabase(() =>
-        supabase.from('system_settings').upsert({
-          id: this.data.system_settings[idx].id,
-          key,
-          value,
-          updated_at: nowIso,
-        }, { onConflict: 'id' })
-      );
+    if (existing) {
+      sqliteRun('UPDATE system_settings SET value = ?, updated_at = ? WHERE key = ?', [value, nowIso, key]);
     } else {
-      const newSetting = {
-        id: `setting_${Date.now()}`,
-        key,
-        value,
-        description: `Custom setting ${key}`,
-        updated_at: nowIso,
-      };
-      this.data.system_settings.push(newSetting);
-      this.safeSupabase(() => supabase.from('system_settings').insert(newSetting));
+      sqliteRun(
+        'INSERT INTO system_settings (id, key, value, description, updated_at) VALUES (?, ?, ?, ?, ?)',
+        [`setting_${Date.now()}`, key, value, `Configuration setting ${key}`, nowIso]
+      );
     }
   }
 
@@ -1014,29 +712,165 @@ class AppDatabase {
       id: `log_${crypto.randomUUID()}`,
       created_at: new Date().toISOString(),
     };
-    this.data.activity_logs.unshift(newLog);
-    if (this.data.activity_logs.length > 200) {
-      this.data.activity_logs = this.data.activity_logs.slice(0, 200);
-    }
 
-    // Insert directly into Supabase
-    this.safeSupabase(() =>
-      supabase.from('activity_logs').insert({
-        id: newLog.id,
-        user_id: newLog.user_id || null,
-        user_email: newLog.user_email || null,
-        action: newLog.action,
-        metadata: newLog.metadata || {},
-        ip_address: newLog.ip_address || null,
-        created_at: newLog.created_at,
-      })
+    sqliteRun(
+      'INSERT INTO activity_logs (id, user_id, user_email, action, metadata, ip_address, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+      [
+        newLog.id,
+        newLog.user_id || null,
+        newLog.user_email || null,
+        newLog.action,
+        newLog.metadata ? JSON.stringify(newLog.metadata) : null,
+        newLog.ip_address || null,
+        newLog.created_at,
+      ]
     );
+
+    // Keep activity logs bounded to last 500 items for performance
+    try {
+      sqliteRun(`
+        DELETE FROM activity_logs WHERE id NOT IN (
+          SELECT id FROM activity_logs ORDER BY created_at DESC LIMIT 500
+        )
+      `);
+    } catch (_) {}
 
     return newLog;
   }
 
-  getActivityLogs(limit = 50): ActivityLog[] {
-    return this.data.activity_logs.slice(0, limit);
+  getActivityLogs(limit = 100): ActivityLog[] {
+    const rows = sqliteAll<any>('SELECT * FROM activity_logs ORDER BY created_at DESC LIMIT ?', [limit]);
+    return rows.map((r) => {
+      let metadata = {};
+      if (r.metadata) {
+        try {
+          metadata = typeof r.metadata === 'string' ? JSON.parse(r.metadata) : r.metadata;
+        } catch (_) {}
+      }
+      return {
+        id: r.id,
+        user_id: r.user_id,
+        user_email: r.user_email,
+        action: r.action,
+        metadata,
+        ip_address: r.ip_address,
+        created_at: r.created_at,
+      };
+    });
+  }
+
+  // ==========================================
+  // --- SECURITY: TOKEN REVOCATION & BRUTE-FORCE PROTECTION ---
+  // ==========================================
+
+  revokeToken(tokenHash: string, userId: string, expiresAt: string): void {
+    const nowIso = new Date().toISOString();
+    sqliteRun(
+      'INSERT OR REPLACE INTO revoked_tokens (token_hash, user_id, revoked_at, expires_at) VALUES (?, ?, ?, ?)',
+      [tokenHash, userId, nowIso, expiresAt]
+    );
+  }
+
+  isTokenRevoked(tokenHash: string): boolean {
+    const row = sqliteGet<{ token_hash: string }>(
+      'SELECT token_hash FROM revoked_tokens WHERE token_hash = ?',
+      [tokenHash]
+    );
+    return Boolean(row);
+  }
+
+  cleanExpiredRevokedTokens(): void {
+    const nowIso = new Date().toISOString();
+    sqliteRun('DELETE FROM revoked_tokens WHERE expires_at < ?', [nowIso]);
+  }
+
+  /**
+   * Check if identifier (IP or email) is locked out from too many failed login attempts
+   */
+  checkLoginLockout(identifier: string): { locked: boolean; remainingSeconds?: number; attempts: number } {
+    const record = sqliteGet<{ attempts: number; last_attempt_at: string; locked_until: string | null }>(
+      'SELECT attempts, last_attempt_at, locked_until FROM login_attempts WHERE identifier = ?',
+      [identifier.toLowerCase().trim()]
+    );
+
+    if (!record) {
+      return { locked: false, attempts: 0 };
+    }
+
+    if (record.locked_until) {
+      const lockExpiry = new Date(record.locked_until).getTime();
+      const now = Date.now();
+      if (lockExpiry > now) {
+        return {
+          locked: true,
+          remainingSeconds: Math.ceil((lockExpiry - now) / 1000),
+          attempts: record.attempts,
+        };
+      }
+    }
+
+    // Reset if last attempt was more than 15 minutes ago
+    const fifteenMinsAgo = Date.now() - 15 * 60 * 1000;
+    if (new Date(record.last_attempt_at).getTime() < fifteenMinsAgo) {
+      this.resetLoginAttempts(identifier);
+      return { locked: false, attempts: 0 };
+    }
+
+    return { locked: false, attempts: record.attempts };
+  }
+
+  recordFailedLogin(identifier: string): { locked: boolean; remainingSeconds?: number; attempts: number } {
+    const cleanId = identifier.toLowerCase().trim();
+    const existing = sqliteGet<{ attempts: number }>(
+      'SELECT attempts FROM login_attempts WHERE identifier = ?',
+      [cleanId]
+    );
+
+    const newAttempts = (existing?.attempts || 0) + 1;
+    const nowIso = new Date().toISOString();
+    let lockedUntil: string | null = null;
+
+    // Lock account after 5 consecutive failures for 15 minutes (900 seconds)
+    if (newAttempts >= 5) {
+      lockedUntil = new Date(Date.now() + 15 * 60 * 1000).toISOString();
+    }
+
+    sqliteRun(
+      'INSERT OR REPLACE INTO login_attempts (identifier, attempts, last_attempt_at, locked_until) VALUES (?, ?, ?, ?)',
+      [cleanId, newAttempts, nowIso, lockedUntil]
+    );
+
+    if (lockedUntil) {
+      this.logActivity({
+        action: 'SECURITY_ACCOUNT_LOCKED_BRUTE_FORCE',
+        metadata: { identifier: cleanId, attempts: newAttempts, lockedDurationMinutes: 15 },
+      });
+      return { locked: true, remainingSeconds: 15 * 60, attempts: newAttempts };
+    }
+
+    return { locked: false, attempts: newAttempts };
+  }
+
+  resetLoginAttempts(identifier: string): void {
+    const cleanId = identifier.toLowerCase().trim();
+    sqliteRun('DELETE FROM login_attempts WHERE identifier = ?', [cleanId]);
+  }
+
+  // ==========================================
+  // --- BACKWARDS COMPATIBILITY GETTER ---
+  // ==========================================
+
+  get data() {
+    return {
+      users: this.getUsers(),
+      businesses: this.getAllBusinesses(),
+      processing_sessions: sqliteAll<ProcessingSession>('SELECT * FROM processing_sessions'),
+      uploaded_images: sqliteAll<UploadedImage>('SELECT * FROM uploaded_images'),
+      processing_jobs: this.getAllProcessingJobs(),
+      processed_images: sqliteAll<ProcessedImage>('SELECT * FROM processed_images'),
+      system_settings: sqliteAll<SystemSetting>('SELECT * FROM system_settings'),
+      activity_logs: this.getActivityLogs(200),
+    };
   }
 
   // ==========================================
@@ -1044,15 +878,25 @@ class AppDatabase {
   // ==========================================
 
   getSystemStats() {
-    const totalUsers = this.data.users.length;
-    const activeUsers = this.data.users.filter((u) => u.status === 'active').length;
-    const totalBusinesses = this.data.businesses.length;
-    const totalJobs = this.data.processing_jobs.length;
-    const totalProcessedImages = this.data.processed_images.length;
-    const totalOriginalImages = this.data.uploaded_images.length;
-    const activeSessions = this.data.processing_sessions.filter(
-      (s) => new Date(s.expires_at).getTime() > Date.now()
-    ).length;
+    const users = this.getUsers();
+    const totalUsers = users.length;
+    const activeUsers = users.filter((u) => u.status === 'active').length;
+    const businesses = this.getAllBusinesses();
+    const totalBusinesses = businesses.length;
+    const jobs = this.getAllProcessingJobs();
+    const totalJobs = jobs.length;
+
+    const countProcessed = sqliteGet<{ count: number }>('SELECT COUNT(*) AS count FROM processed_images');
+    const totalProcessedImages = countProcessed?.count || 0;
+
+    const countOriginal = sqliteGet<{ count: number }>('SELECT COUNT(*) AS count FROM uploaded_images');
+    const totalOriginalImages = countOriginal?.count || 0;
+
+    const countSessions = sqliteGet<{ count: number }>(
+      'SELECT COUNT(*) AS count FROM processing_sessions WHERE expires_at > ?',
+      [new Date().toISOString()]
+    );
+    const activeSessions = countSessions?.count || 0;
 
     let storageBytes = 0;
     const calculateDirSize = (dirPath: string) => {
@@ -1071,6 +915,8 @@ class AppDatabase {
     };
     calculateDirSize(STORAGE_DIR);
 
+    const sqliteStats = getSqliteStats();
+
     return {
       totalUsers,
       activeUsers,
@@ -1081,75 +927,78 @@ class AppDatabase {
       activeSessions,
       storageBytes,
       storageFormatted: (storageBytes / (1024 * 1024)).toFixed(2) + ' MB',
-      databaseType: `Supabase Cloud PostgreSQL Database (${SUPABASE_PROJECT_NAME})`,
-      databaseSizeBytes: storageBytes + this.data.users.length * 1024 + this.data.processing_jobs.length * 512,
+      databaseType: 'SQLite 3 (Embedded Local Database)',
+      databaseSizeBytes: sqliteStats.fileSizeBytes,
+      databaseSizeFormatted: sqliteStats.fileSizeFormatted,
       databaseConnected: true,
-      supabaseConnected: this.supabaseConnected,
-      supabaseRlsBlocked: this.supabaseRlsBlocked,
-      supabaseProjectName: SUPABASE_PROJECT_NAME,
-      supabaseProjectId: SUPABASE_PROJECT_ID,
-      supabaseUrl: SUPABASE_URL,
+      sqliteFilePath: DB_FILE_PATH,
+      sqliteEngine: 'SQLite 3 Embedded Engine (WASM/Node runtime)',
+      sqliteTotalRecords: sqliteStats.totalRecords,
+      sqliteTableCounts: sqliteStats.tableCounts,
     };
   }
 
-  // Clean expired data
+  // ==========================================
+  // --- CLEANUP & EXPIRATION ---
+  // ==========================================
+
   cleanExpiredRecords(nowIso: string): { sessionsCleaned: number; jobsCleaned: number } {
-    const nowTime = new Date(nowIso).getTime();
-
-    // Expired sessions
-    const expiredSessions = this.data.processing_sessions.filter(
-      (s) => new Date(s.expires_at).getTime() < nowTime
+    // 1. Find expired sessions
+    const expiredSessions = sqliteAll<ProcessingSession>(
+      'SELECT * FROM processing_sessions WHERE expires_at < ?',
+      [nowIso]
     );
-    const expiredSessionIds = new Set(expiredSessions.map((s) => s.id));
 
-    // Remove expired uploaded images
-    const removedImages = this.data.uploaded_images.filter((img) =>
-      expiredSessionIds.has(img.processing_session_id)
-    );
-    removedImages.forEach((img) => {
-      if (fs.existsSync(img.temporary_path)) {
-        try {
-          fs.unlinkSync(img.temporary_path);
-        } catch (_) {}
-      }
+    // Delete corresponding uploaded images files
+    expiredSessions.forEach((sess) => {
+      const images = sqliteAll<UploadedImage>(
+        'SELECT * FROM uploaded_images WHERE processing_session_id = ?',
+        [sess.id]
+      );
+      images.forEach((img) => {
+        if (img.temporary_path && fs.existsSync(img.temporary_path)) {
+          try {
+            fs.unlinkSync(img.temporary_path);
+          } catch (_) {}
+        }
+      });
+      sqliteRun('DELETE FROM uploaded_images WHERE processing_session_id = ?', [sess.id]);
     });
 
-    this.data.uploaded_images = this.data.uploaded_images.filter(
-      (img) => !expiredSessionIds.has(img.processing_session_id)
-    );
-    this.data.processing_sessions = this.data.processing_sessions.filter(
-      (s) => !expiredSessionIds.has(s.id)
+    sqliteRun('DELETE FROM processing_sessions WHERE expires_at < ?', [nowIso]);
+
+    // 2. Find expired processing jobs
+    const expiredJobs = sqliteAll<ProcessingJob>(
+      'SELECT * FROM processing_jobs WHERE expires_at < ?',
+      [nowIso]
     );
 
-    // Expired jobs & processed images (> 1 hr)
-    const expiredJobs = this.data.processing_jobs.filter(
-      (j) => new Date(j.expires_at).getTime() < nowTime
-    );
-    const expiredJobIds = new Set(expiredJobs.map((j) => j.id));
-
-    const removedProcessed = this.data.processed_images.filter((p) =>
-      expiredJobIds.has(p.processing_job_id)
-    );
-    removedProcessed.forEach((p) => {
-      if (fs.existsSync(p.output_path)) {
+    expiredJobs.forEach((job) => {
+      if (job.zip_path && fs.existsSync(job.zip_path)) {
         try {
-          fs.unlinkSync(p.output_path);
+          fs.unlinkSync(job.zip_path);
         } catch (_) {}
       }
+      const processed = sqliteAll<ProcessedImage>(
+        'SELECT * FROM processed_images WHERE processing_job_id = ?',
+        [job.id]
+      );
+      processed.forEach((p) => {
+        if (p.output_path && fs.existsSync(p.output_path)) {
+          try {
+            fs.unlinkSync(p.output_path);
+          } catch (_) {}
+        }
+      });
+      sqliteRun('DELETE FROM processed_images WHERE processing_job_id = ?', [job.id]);
     });
 
-    expiredJobs.forEach((j) => {
-      if (j.zip_path && fs.existsSync(j.zip_path)) {
-        try {
-          fs.unlinkSync(j.zip_path);
-        } catch (_) {}
-      }
-    });
+    sqliteRun('DELETE FROM processing_jobs WHERE expires_at < ?', [nowIso]);
 
-    this.data.processed_images = this.data.processed_images.filter(
-      (p) => !expiredJobIds.has(p.processing_job_id)
-    );
-    this.data.processing_jobs = this.data.processing_jobs.filter((j) => !expiredJobIds.has(j.id));
+    // 3. Clean expired revoked tokens
+    this.cleanExpiredRevokedTokens();
+
+    saveDatabaseImmediate();
 
     return {
       sessionsCleaned: expiredSessions.length,
@@ -1157,13 +1006,12 @@ class AppDatabase {
     };
   }
 
-  /**
-   * Complete data purge:
-   * Removes all businesses, uploaded images, jobs, processed images,
-   * non-admin users, and reset settings to default while keeping the specified admin.
-   */
-  async wipeAllDataExceptAdmin(adminEmail: string = 'dularaavishka890@gmail.com') {
-    // 1. Clean physical disk files
+  // ==========================================
+  // --- FACTORY RESET / WIPE DATA ---
+  // ==========================================
+
+  wipeAllDataExceptAdmin(adminEmail = 'dularaavishka890@gmail.com') {
+    // 1. Clean disk files
     const cleanDirectoryFiles = (dirPath: string) => {
       if (fs.existsSync(dirPath)) {
         try {
@@ -1187,74 +1035,64 @@ class AppDatabase {
     cleanDirectoryFiles(TEMP_DIR);
     cleanDirectoryFiles(ZIPS_DIR);
 
-    // 2. Preserve specified admin user
-    const preservedUser = this.data.users.find(
-      (u) => u.email.toLowerCase() === adminEmail.toLowerCase()
-    );
+    // 2. Preserve admin
+    const cleanEmail = adminEmail.trim().toLowerCase();
+    const existingAdmin = sqliteGet<User>('SELECT * FROM users WHERE LOWER(email) = LOWER(?)', [cleanEmail]);
 
-    let finalUsers: User[] = [];
-    if (preservedUser) {
-      finalUsers = [
-        {
-          ...preservedUser,
-          role: 'admin',
-          status: 'active',
-          updated_at: new Date().toISOString(),
-        },
-      ];
+    sqliteRun('DELETE FROM businesses;');
+    sqliteRun('DELETE FROM processing_sessions;');
+    sqliteRun('DELETE FROM uploaded_images;');
+    sqliteRun('DELETE FROM processing_jobs;');
+    sqliteRun('DELETE FROM processed_images;');
+    sqliteRun('DELETE FROM revoked_tokens;');
+    sqliteRun('DELETE FROM login_attempts;');
+    sqliteRun('DELETE FROM users WHERE LOWER(email) != LOWER(?);', [cleanEmail]);
+
+    if (!existingAdmin) {
+      this.seedDefaultAdmin();
     } else {
-      const salt = bcrypt.genSaltSync(10);
-      const hashedPassword = bcrypt.hashSync('Dulara@2001', salt);
-      finalUsers = [
-        {
-          id: 'user_admin_primary',
-          name: 'Dulara Avishka',
-          email: adminEmail,
-          password: hashedPassword,
-          role: 'admin',
-          status: 'active',
-          created_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        },
-      ];
+      sqliteRun('UPDATE users SET role = "admin", status = "active" WHERE LOWER(email) = LOWER(?)', [cleanEmail]);
     }
 
-    // 3. Reset runtime records
-    this.data.users = finalUsers;
-    this.data.businesses = [];
-    this.data.processing_sessions = [];
-    this.data.uploaded_images = [];
-    this.data.processing_jobs = [];
-    this.data.processed_images = [];
-    this.data.system_settings = this.getDefaultSystemSettings();
-    this.data.activity_logs = [
-      {
-        id: `log_${Date.now()}`,
-        action: 'ALL_DATA_CLEANED_FACTORY_RESET',
-        user_id: finalUsers[0]?.id,
-        user_email: adminEmail,
-        metadata: {
-          timestamp: new Date().toISOString(),
-          preservedAdmin: adminEmail,
-          defaultSettingsRestored: true,
-        },
-        created_at: new Date().toISOString(),
-      },
-    ];
+    this.seedDefaultSystemSettings();
 
-    // 4. Wipe non-admin users, businesses, jobs in Supabase
-    try {
-      await supabase.from('businesses').delete().neq('id', 'preserve_none');
-      await supabase.from('processing_jobs').delete().neq('id', 'preserve_none');
-      await supabase.from('users').delete().neq('email', adminEmail);
-      await this.ensureAdminInSupabase();
-    } catch (_) {}
+    this.logActivity({
+      action: 'ALL_DATA_CLEANED_FACTORY_RESET',
+      user_email: cleanEmail,
+      metadata: {
+        timestamp: new Date().toISOString(),
+        preservedAdmin: cleanEmail,
+        database: 'SQLite 3 Embedded Local Database',
+      },
+    });
+
+    saveDatabaseImmediate();
 
     return {
       success: true,
-      preservedAdmin: adminEmail,
-      message: 'All application data has been wiped and default settings restored in Supabase.',
+      preservedAdmin: cleanEmail,
+      message: 'All application data has been wiped and reset in the SQLite database.',
     };
+  }
+
+  // ==========================================
+  // --- SQLITE ADMIN TOOLS ---
+  // ==========================================
+
+  integrityCheck() {
+    return sqliteIntegrityCheck();
+  }
+
+  vacuum() {
+    return sqliteVacuum();
+  }
+
+  createBackup() {
+    return sqliteCreateBackup();
+  }
+
+  getSqliteMetadata() {
+    return getSqliteStats();
   }
 }
 

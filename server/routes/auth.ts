@@ -1,6 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { db } from '../db';
-import { AuthService, AuthenticatedRequest } from '../services/AuthService';
+import { AuthService, AuthenticatedRequest, SESSION_LIFETIME_DAYS } from '../services/AuthService';
 
 const router = Router();
 
@@ -12,11 +12,14 @@ router.post('/register', (req: Request, res: Response) => {
     return res.status(400).json({ error: 'Name, email, and password are required.' });
   }
 
-  if (password.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+  // Password security validation
+  const pwdValidation = AuthService.validatePasswordStrength(password);
+  if (!pwdValidation.isValid) {
+    return res.status(400).json({ error: pwdValidation.error });
   }
 
-  const existing = db.getUserByEmail(email);
+  const cleanEmail = email.trim().toLowerCase();
+  const existing = db.getUserByEmail(cleanEmail);
   if (existing) {
     return res.status(409).json({ error: 'An account with this email already exists.' });
   }
@@ -24,17 +27,20 @@ router.post('/register', (req: Request, res: Response) => {
   const hashedPassword = AuthService.hashPassword(password);
   const user = db.createUser({
     name: name.trim(),
-    email: email.trim().toLowerCase(),
+    email: cleanEmail,
     password: hashedPassword,
     role: 'user',
     status: 'active',
   });
 
-  const token = AuthService.generateToken(user);
+  const { token, expiresInSeconds, expiresAt } = AuthService.generateToken(user);
 
   res.status(201).json({
     message: 'Account registered successfully',
     token,
+    expiresInSeconds,
+    expiresAt,
+    sessionLifetimeDays: SESSION_LIFETIME_DAYS,
     user: {
       id: user.id,
       name: user.name,
@@ -45,16 +51,40 @@ router.post('/register', (req: Request, res: Response) => {
   });
 });
 
-// Login
+// Login with lockout & brute-force defense
 router.post('/login', (req: Request, res: Response) => {
   const { email, password } = req.body;
+  const clientIp = String(req.headers['x-forwarded-for'] || req.socket.remoteAddress || req.ip || '127.0.0.1');
 
   if (!email || !password) {
     return res.status(400).json({ error: 'Email and password are required.' });
   }
 
-  const user = db.getUserByEmail(email);
+  const cleanEmail = email.trim().toLowerCase();
+
+  // 1. Check account lockout protection
+  const lockout = db.checkLoginLockout(cleanEmail);
+  if (lockout.locked) {
+    const minsLeft = Math.ceil((lockout.remainingSeconds || 900) / 60);
+    return res.status(429).json({
+      error: `Too many failed login attempts. Account temporarily locked for ${minsLeft} minutes for your security.`,
+    });
+  }
+
+  const user = db.getUserByEmail(cleanEmail);
   if (!user) {
+    const failure = db.recordFailedLogin(cleanEmail);
+    db.logActivity({
+      user_email: cleanEmail,
+      action: 'USER_LOGIN_FAILED',
+      ip_address: clientIp,
+      metadata: { reason: 'User not found', attempts: failure.attempts },
+    });
+    if (failure.locked) {
+      return res.status(429).json({
+        error: 'Too many failed login attempts. Account temporarily locked for 15 minutes for your security.',
+      });
+    }
     return res.status(401).json({ error: 'Invalid email or password.' });
   }
 
@@ -64,21 +94,42 @@ router.post('/login', (req: Request, res: Response) => {
 
   const isValid = AuthService.comparePassword(password, user.password);
   if (!isValid) {
+    const failure = db.recordFailedLogin(cleanEmail);
+    db.logActivity({
+      user_id: user.id,
+      user_email: user.email,
+      action: 'USER_LOGIN_FAILED',
+      ip_address: clientIp,
+      metadata: { reason: 'Incorrect password', attempts: failure.attempts },
+    });
+    if (failure.locked) {
+      return res.status(429).json({
+        error: 'Too many failed login attempts. Account temporarily locked for 15 minutes for your security.',
+      });
+    }
     return res.status(401).json({ error: 'Invalid email or password.' });
   }
 
-  const token = AuthService.generateToken(user);
+  // Reset failed attempts on valid login
+  db.resetLoginAttempts(cleanEmail);
+
+  // Generate 2-day session token
+  const { token, expiresInSeconds, expiresAt } = AuthService.generateToken(user);
 
   db.logActivity({
     user_id: user.id,
     user_email: user.email,
-    action: 'USER_LOGIN',
-    metadata: { role: user.role },
+    action: 'USER_LOGIN_SUCCESS',
+    ip_address: clientIp,
+    metadata: { role: user.role, sessionLifetimeDays: SESSION_LIFETIME_DAYS },
   });
 
   res.json({
     message: 'Login successful',
     token,
+    expiresInSeconds,
+    expiresAt,
+    sessionLifetimeDays: SESSION_LIFETIME_DAYS,
     user: {
       id: user.id,
       name: user.name,
@@ -101,6 +152,7 @@ router.get('/me', AuthService.requireAuth, (req: AuthenticatedRequest, res: Resp
       status: user.status,
       created_at: user.created_at,
     },
+    sessionLifetimeDays: SESSION_LIFETIME_DAYS,
   });
 });
 
@@ -121,8 +173,9 @@ router.put('/profile', AuthService.requireAuth, (req: AuthenticatedRequest, res:
     if (!AuthService.comparePassword(currentPassword, user.password)) {
       return res.status(400).json({ error: 'Current password does not match.' });
     }
-    if (newPassword.length < 6) {
-      return res.status(400).json({ error: 'New password must be at least 6 characters long.' });
+    const pwdValidation = AuthService.validatePasswordStrength(newPassword);
+    if (!pwdValidation.isValid) {
+      return res.status(400).json({ error: pwdValidation.error });
     }
     updates.password = AuthService.hashPassword(newPassword);
   }
@@ -144,6 +197,41 @@ router.put('/profile', AuthService.requireAuth, (req: AuthenticatedRequest, res:
   });
 });
 
+// Update password directly
+router.put('/password', AuthService.requireAuth, (req: AuthenticatedRequest, res: Response) => {
+  const user = req.user!;
+  const { currentPassword, newPassword } = req.body;
+
+  if (!currentPassword || !newPassword) {
+    return res.status(400).json({ error: 'Current password and new password are required.' });
+  }
+
+  if (!AuthService.comparePassword(currentPassword, user.password)) {
+    return res.status(400).json({ error: 'Current password does not match.' });
+  }
+
+  const pwdValidation = AuthService.validatePasswordStrength(newPassword);
+  if (!pwdValidation.isValid) {
+    return res.status(400).json({ error: pwdValidation.error });
+  }
+
+  const updated = db.updateUser(user.id, {
+    password: AuthService.hashPassword(newPassword),
+  });
+
+  if (!updated) {
+    return res.status(500).json({ error: 'Failed to update password.' });
+  }
+
+  db.logActivity({
+    user_id: user.id,
+    user_email: user.email,
+    action: 'PASSWORD_UPDATED',
+  });
+
+  res.json({ message: 'Password updated successfully.' });
+});
+
 // Forgot password request
 router.post('/forgot-password', (req: Request, res: Response) => {
   const { email } = req.body;
@@ -152,23 +240,22 @@ router.post('/forgot-password', (req: Request, res: Response) => {
   }
 
   const user = db.getUserByEmail(email);
-  // Always return success message for security to prevent user enumeration
   res.json({
-    message: 'If an account exists with that email, a password reset link has been dispatched.',
-    // For demo convenience in this environment, provide demo reset guidance
+    message: 'If an account exists with that email, password reset instructions have been issued.',
     hint: user ? 'Use the Reset Password page with demo token.' : undefined,
   });
 });
 
 // Reset password execution
 router.post('/reset-password', (req: Request, res: Response) => {
-  const { email, token, newPassword } = req.body;
+  const { email, newPassword } = req.body;
   if (!email || !newPassword) {
     return res.status(400).json({ error: 'Email and new password are required.' });
   }
 
-  if (newPassword.length < 6) {
-    return res.status(400).json({ error: 'Password must be at least 6 characters long.' });
+  const pwdValidation = AuthService.validatePasswordStrength(newPassword);
+  if (!pwdValidation.isValid) {
+    return res.status(400).json({ error: pwdValidation.error });
   }
 
   const user = db.getUserByEmail(email);
@@ -189,16 +276,19 @@ router.post('/reset-password', (req: Request, res: Response) => {
   res.json({ message: 'Password has been reset successfully. You can now log in.' });
 });
 
-// Logout
+// Logout with token revocation
 router.post('/logout', AuthService.requireAuth, (req: AuthenticatedRequest, res: Response) => {
   if (req.user) {
+    if (req.token) {
+      AuthService.revokeToken(req.token, req.user.id);
+    }
     db.logActivity({
       user_id: req.user.id,
       user_email: req.user.email,
       action: 'USER_LOGOUT',
     });
   }
-  res.json({ message: 'Logged out successfully.' });
+  res.json({ message: 'Logged out successfully. Session invalidated.' });
 });
 
 export default router;

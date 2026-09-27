@@ -25,8 +25,12 @@ export const Register: React.FC<RegisterProps> = ({ onNavigate }) => {
       return;
     }
 
-    if (password.length < 6) {
-      error('Weak Password', 'Password must be at least 6 characters.');
+    if (password.length < 8) {
+      error('Weak Password', 'Password must be at least 8 characters with letters and numbers.');
+      return;
+    }
+    if (!/[a-zA-Z]/.test(password) || !/[0-9]/.test(password)) {
+      error('Weak Password', 'Password must contain both letters and numbers for heightened security.');
       return;
     }
 
@@ -38,7 +42,7 @@ export const Register: React.FC<RegisterProps> = ({ onNavigate }) => {
     setIsLoading(true);
     try {
       const trimmedEmail = email.trim().toLowerCase();
-      const res = await api.post<{ token?: string; user?: any; data?: any }>('/api/auth/register', {
+      const res = await api.post<{ token?: string; user?: any; data?: any; expiresAt?: string }>('/api/auth/register', {
         name: name.trim(),
         email: trimmedEmail,
         password,
@@ -51,8 +55,8 @@ export const Register: React.FC<RegisterProps> = ({ onNavigate }) => {
         throw new Error('Registration completed but could not establish session. Please sign in.');
       }
 
-      login(token, user);
-      success('Account Created!', `Welcome to WatermarkPro, ${user.name || user.email || 'User'}`);
+      login(token, user, res?.expiresAt);
+      success('Account Created!', `Welcome to WatermarkPro, ${user.name || user.email || 'User'} (2-Day Session Active)`);
       onNavigate('dashboard');
     } catch (err: any) {
       error('Registration Failed', err.message || 'Could not register account.');

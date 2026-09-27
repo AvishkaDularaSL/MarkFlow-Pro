@@ -1,23 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '../../lib/api';
-import { AdminStats, AuditLog } from '../../types';
 import { useToast } from '../../context/ToastContext';
 import {
   Users,
   Briefcase,
   Layers,
-  HardDrive,
-  Shield,
-  Activity,
-  Trash2,
-  Download,
+  Image as ImageIcon,
   Clock,
-  Sparkles,
+  Shield,
+  Trash2,
+  Database,
   Loader2,
   CheckCircle2,
-  Database,
-  RefreshCw,
-  ExternalLink,
+  AlertCircle,
+  HardDrive,
+  FileCheck,
 } from 'lucide-react';
 
 interface AdminDashboardProps {
@@ -26,17 +23,17 @@ interface AdminDashboardProps {
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) => {
   const { success, error } = useToast();
-  const [stats, setStats] = useState<AdminStats | null>(null);
-  const [recentLogs, setRecentLogs] = useState<AuditLog[]>([]);
+  const [stats, setStats] = useState<any>(null);
+  const [recentLogs, setRecentLogs] = useState<any[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCleaning, setIsCleaning] = useState(false);
-  const [isSyncing, setIsSyncing] = useState(false);
+  const [isCheckingIntegrity, setIsCheckingIntegrity] = useState(false);
 
   const fetchAdminData = async () => {
     try {
       const [statsRes, logsRes] = await Promise.all([
         api.get<any>('/api/admin/stats'),
-        api.get<{ logs: any[] }>('/api/admin/logs?limit=8'),
+        api.get<{ logs: any[] }>('/api/admin/logs?limit=5'),
       ]);
       const rawStats = statsRes?.stats || statsRes || {};
       setStats({
@@ -45,14 +42,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
         totalJobs: Number(rawStats.totalJobs) || 0,
         totalImagesProcessed: Number(rawStats.totalImagesProcessed ?? rawStats.totalProcessedImages) || 0,
         activeSessions: Number(rawStats.activeSessions) || 0,
-        databaseType: rawStats.databaseType || 'Supabase Cloud PostgreSQL Database (Image Process System)',
+        databaseType: rawStats.databaseType || 'SQLite 3 (Embedded Local Database)',
         databaseSizeBytes: Number(rawStats.databaseSizeBytes) || 0,
+        databaseSizeFormatted: rawStats.databaseSizeFormatted || '0 KB',
         storageUsageBytes: Number(rawStats.storageUsageBytes ?? rawStats.storageBytes) || 0,
-        supabaseConnected: rawStats.supabaseConnected ?? true,
-        supabaseRlsBlocked: Boolean(rawStats.supabaseRlsBlocked),
-        supabaseProjectName: rawStats.supabaseProjectName || 'Image Process System',
-        supabaseProjectId: rawStats.supabaseProjectId || 'zrzvcgbcmyzgtitxlvjr',
-        supabaseUrl: rawStats.supabaseUrl || 'https://zrzvcgbcmyzgtitxlvjr.supabase.co',
+        sqliteFilePath: rawStats.sqliteFilePath || '/storage/watermarkpro.sqlite',
+        sqliteEngine: rawStats.sqliteEngine || 'SQLite 3 Embedded Engine',
+        sqliteTotalRecords: Number(rawStats.sqliteTotalRecords) || 0,
       });
       setRecentLogs(logsRes?.logs || []);
     } catch (err: any) {
@@ -66,16 +62,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
     fetchAdminData();
   }, []);
 
-  const handleSyncSupabase = async () => {
-    setIsSyncing(true);
+  const handleIntegrityCheck = async () => {
+    setIsCheckingIntegrity(true);
     try {
-      const res = await api.post<{ message: string }>('/api/admin/supabase/sync');
-      success('Supabase Sync', res.message || 'Supabase database synchronized successfully.');
+      const res = await api.post<{ message: string; check: { status: string; details: string[] } }>(
+        '/api/admin/sqlite/integrity-check'
+      );
+      if (res.check?.status === 'ok') {
+        success('SQLite Integrity Verified', 'Database integrity check passed with 0 errors.');
+      } else {
+        error('Integrity Notice', res.message || 'SQLite integrity check reported issues.');
+      }
       fetchAdminData();
     } catch (err: any) {
-      error('Sync Failed', err.message);
+      error('Integrity Check Failed', err.message);
     } finally {
-      setIsSyncing(false);
+      setIsCheckingIntegrity(false);
     }
   };
 
@@ -112,26 +114,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
             </h1>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            System overview, resource monitoring, user management, and manual garbage collection.
+            System overview, SQLite embedded database monitoring, user accounts, and 2-day session management.
           </p>
         </div>
 
         <div className="flex items-center gap-3">
           <button
-            id="admin-sync-supabase-btn"
-            onClick={handleSyncSupabase}
-            disabled={isSyncing}
-            className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition-all disabled:opacity-50"
+            id="admin-sqlite-integrity-btn"
+            onClick={handleIntegrityCheck}
+            disabled={isCheckingIntegrity}
+            className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-bold text-xs shadow-xs transition-all disabled:opacity-50 cursor-pointer"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${isSyncing ? 'animate-spin' : ''}`} />
-            <span>Sync Supabase Cloud</span>
+            {isCheckingIntegrity ? (
+              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+            ) : (
+              <FileCheck className="w-3.5 h-3.5" />
+            )}
+            <span>Verify SQLite Integrity</span>
           </button>
 
           <button
             id="admin-trigger-cleanup-btn"
             onClick={handleTriggerCleanup}
             disabled={isCleaning}
-            className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow-xs transition-all disabled:opacity-50"
+            className="inline-flex items-center gap-2 px-3.5 py-2.5 rounded-lg bg-amber-500 hover:bg-amber-600 text-white font-bold text-xs shadow-xs transition-all disabled:opacity-50 cursor-pointer"
           >
             {isCleaning ? <Loader2 className="w-4 h-4 animate-spin" /> : <Trash2 className="w-4 h-4" />}
             <span>Purge Expired</span>
@@ -143,91 +149,111 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <div
           onClick={() => onNavigate('admin-users')}
-          className="bg-white border border-slate-200 p-5 rounded-xl cursor-pointer hover:border-slate-300 shadow-xs hover:shadow-sm transition-all"
+          className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs hover:border-indigo-300 hover:shadow-md transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Total Users</span>
-            <div className="w-8 h-8 rounded-lg bg-blue-50 text-blue-600 flex items-center justify-center border border-blue-100">
-              <Users className="w-4 h-4" />
+            <span className="text-xs font-semibold text-slate-500">Registered Users</span>
+            <div className="w-9 h-9 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center group-hover:scale-110 transition-transform">
+              <Users className="w-5 h-5" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-slate-900 mt-3 font-mono">{stats?.totalUsers || 0}</p>
-          <p className="text-xs text-blue-600 font-semibold mt-1">Click to manage users &rarr;</p>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-2xl font-bold text-slate-900">{stats?.totalUsers || 0}</span>
+            <span className="text-xs text-indigo-600 font-semibold">Active Accounts</span>
+          </div>
         </div>
 
         <div
           onClick={() => onNavigate('admin-businesses')}
-          className="bg-white border border-slate-200 p-5 rounded-xl cursor-pointer hover:border-slate-300 shadow-xs hover:shadow-sm transition-all"
+          className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs hover:border-purple-300 hover:shadow-md transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Total Businesses</span>
-            <div className="w-8 h-8 rounded-lg bg-indigo-50 text-indigo-600 flex items-center justify-center border border-indigo-100">
-              <Briefcase className="w-4 h-4" />
+            <span className="text-xs font-semibold text-slate-500">Watermark Brands</span>
+            <div className="w-9 h-9 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center group-hover:scale-110 transition-transform">
+              <Briefcase className="w-5 h-5" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-slate-900 mt-3 font-mono">{stats?.totalBusinesses || 0}</p>
-          <p className="text-xs text-indigo-600 font-semibold mt-1">Click to inspect brands &rarr;</p>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-2xl font-bold text-slate-900">{stats?.totalBusinesses || 0}</span>
+            <span className="text-xs text-purple-600 font-semibold">Businesses</span>
+          </div>
         </div>
 
         <div
           onClick={() => onNavigate('admin-jobs')}
-          className="bg-white border border-slate-200 p-5 rounded-xl cursor-pointer hover:border-slate-300 shadow-xs hover:shadow-sm transition-all"
+          className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs hover:border-emerald-300 hover:shadow-md transition-all cursor-pointer group"
         >
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Total Jobs Executed</span>
-            <div className="w-8 h-8 rounded-lg bg-purple-50 text-purple-600 flex items-center justify-center border border-purple-100">
-              <Layers className="w-4 h-4" />
+            <span className="text-xs font-semibold text-slate-500">Batch Jobs</span>
+            <div className="w-9 h-9 rounded-lg bg-emerald-50 text-emerald-600 flex items-center justify-center group-hover:scale-110 transition-transform">
+              <Layers className="w-5 h-5" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-slate-900 mt-3 font-mono">{stats?.totalJobs || 0}</p>
-          <p className="text-xs text-purple-600 font-semibold mt-1 font-mono">
-            {stats?.totalImagesProcessed || 0} WebP images rendered
-          </p>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-2xl font-bold text-slate-900">{stats?.totalJobs || 0}</span>
+            <span className="text-xs text-emerald-600 font-semibold">Jobs Completed</span>
+          </div>
         </div>
 
-        <div className="bg-white border border-slate-200 p-5 rounded-xl shadow-xs">
+        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-xs">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-bold text-slate-500 uppercase tracking-widest">Active Storage Sessions</span>
-            <div className="w-8 h-8 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center border border-amber-100">
-              <HardDrive className="w-4 h-4" />
+            <span className="text-xs font-semibold text-slate-500">Total Images</span>
+            <div className="w-9 h-9 rounded-lg bg-amber-50 text-amber-600 flex items-center justify-center">
+              <ImageIcon className="w-5 h-5" />
             </div>
           </div>
-          <p className="text-2xl font-bold text-slate-900 mt-3 font-mono">{stats?.activeSessions || 0}</p>
-          <p className="text-xs text-slate-400 mt-1">Auto-expires in 60 mins</p>
+          <div className="mt-3 flex items-baseline gap-2">
+            <span className="text-2xl font-bold text-slate-900">
+              {stats?.totalImagesProcessed || 0}
+            </span>
+            <span className="text-xs text-amber-600 font-semibold">Processed</span>
+          </div>
         </div>
       </div>
 
       {/* Storage & Engine Details + Recent Audit Activity */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-        {/* System & Storage Specs */}
+        {/* System & SQLite Storage Specs */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-xs">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100">
             <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
               <Database className="w-4 h-4 text-emerald-600" />
-              <span>Supabase Cloud Database</span>
+              <span>SQLite Embedded Database</span>
             </h2>
             <span className="inline-flex items-center gap-1 text-[10px] px-2 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 font-bold">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-pulse" />
-              Connected
+              Operational
             </span>
           </div>
 
           <div className="space-y-2.5 text-xs">
             <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
               <span className="text-slate-500 font-medium">Database Engine</span>
-              <span className="text-emerald-700 font-bold">Supabase PostgreSQL</span>
+              <span className="text-emerald-700 font-bold">SQLite 3 (Embedded WASM/Node)</span>
             </div>
 
             <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-              <span className="text-slate-500 font-medium">Project Name</span>
-              <span className="text-slate-900 font-bold">{stats?.supabaseProjectName || 'Image Process System'}</span>
-            </div>
-
-            <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-              <span className="text-slate-500 font-medium">Project ID</span>
+              <span className="text-slate-500 font-medium">Database File</span>
               <span className="text-slate-900 font-bold font-mono text-[11px] bg-white px-2 py-0.5 rounded border border-slate-200">
-                {stats?.supabaseProjectId || 'zrzvcgbcmyzgtitxlvjr'}
+                watermarkpro.sqlite
               </span>
+            </div>
+
+            <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+              <span className="text-slate-500 font-medium">DB Size &amp; Records</span>
+              <span className="text-slate-900 font-bold font-mono">
+                {stats?.databaseSizeFormatted || '0 KB'} ({stats?.sqliteTotalRecords || 0} records)
+              </span>
+            </div>
+
+            <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+              <span className="text-slate-500 font-medium">Session Lifetime</span>
+              <span className="text-indigo-700 font-bold">2 Days (48 Hours Auth Token)</span>
+            </div>
+
+            <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
+              <span className="text-slate-500 font-medium">Security Guard</span>
+              <span className="text-emerald-600 font-bold">Lockout + Token Revocation</span>
             </div>
 
             <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
@@ -236,58 +262,62 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({ onNavigate }) =>
                 {((stats?.storageUsageBytes || 0) / (1024 * 1024)).toFixed(2)} MB
               </span>
             </div>
-
-            <div className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200">
-              <span className="text-slate-500 font-medium">Sharp Acceleration</span>
-              <span className="text-emerald-600 font-bold">Native libvips Enabled</span>
-            </div>
           </div>
 
           <div className="pt-2">
             <button
               onClick={() => onNavigate('admin-settings')}
-              className="w-full py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold border border-slate-200 transition-colors"
+              className="w-full py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg text-xs font-bold border border-slate-200 transition-colors cursor-pointer"
             >
-              Configure System &amp; Storage Settings
+              Open SQLite &amp; System Settings
             </button>
           </div>
         </div>
 
-        {/* Live Audit Trail Logs */}
+        {/* Recent Activity Log */}
         <div className="lg:col-span-2 bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-xs">
           <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-            <h2 className="text-sm font-bold text-slate-900 flex items-center gap-2">
-              <Activity className="w-4 h-4 text-emerald-600" />
-              <span>Real-Time Audit Log</span>
-            </h2>
+            <div className="flex items-center gap-2">
+              <Clock className="w-4 h-4 text-slate-500" />
+              <h2 className="text-sm font-bold text-slate-900">Recent Security &amp; System Events</h2>
+            </div>
             <button
               onClick={() => onNavigate('admin-logs')}
-              className="text-xs text-blue-600 hover:text-blue-700 font-bold"
+              className="text-xs font-bold text-indigo-600 hover:text-indigo-800 transition-colors"
             >
-              View all logs &rarr;
+              View All Logs
             </button>
           </div>
 
           {recentLogs.length === 0 ? (
-            <div className="py-8 text-center text-slate-400 text-xs">No audit logs recorded yet.</div>
+            <div className="text-center py-10 text-slate-400 text-xs">
+              No recent audit activity found in SQLite.
+            </div>
           ) : (
-            <div className="space-y-2 max-h-72 overflow-y-auto">
+            <div className="space-y-3">
               {recentLogs.map((log) => (
                 <div
                   key={log.id}
-                  className="flex items-center justify-between p-2.5 rounded-lg bg-slate-50 border border-slate-200 text-xs hover:border-slate-300 transition-colors"
+                  className="flex items-start justify-between p-3 rounded-lg bg-slate-50 border border-slate-200 text-xs"
                 >
-                  <div className="min-w-0 flex items-center gap-2.5">
-                    <span className="w-2 h-2 rounded-full bg-blue-600 shrink-0" />
-                    <div>
-                      <span className="font-bold text-slate-900">{log.action}</span>
-                      <span className="text-slate-500 ml-1.5 font-mono text-[11px]">
-                        {log.details ? JSON.stringify(log.details) : (log as any).metadata ? JSON.stringify((log as any).metadata) : ''}
-                      </span>
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <span className="font-bold text-slate-800">{log.action}</span>
+                      {log.ip_address && (
+                        <span className="text-[10px] text-slate-400 font-mono">
+                          [{log.ip_address}]
+                        </span>
+                      )}
                     </div>
+                    <p className="text-[11px] text-slate-500">
+                      User: {log.user_email || 'System'}
+                    </p>
                   </div>
-                  <span className="text-slate-400 text-[10px] shrink-0 ml-3 font-mono">
-                    {new Date(log.created_at).toLocaleTimeString()}
+                  <span className="text-[11px] text-slate-400 shrink-0">
+                    {new Date(log.created_at).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                    })}
                   </span>
                 </div>
               ))}

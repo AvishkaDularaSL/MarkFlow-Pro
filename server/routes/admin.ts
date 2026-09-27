@@ -1,7 +1,9 @@
 import { Router, Response } from 'express';
+import fs from 'fs';
 import { db } from '../db';
 import { AuthService, AuthenticatedRequest } from '../services/AuthService';
 import { CleanupService } from '../services/CleanupService';
+import { DB_FILE_PATH } from '../sqlite';
 
 const router = Router();
 
@@ -44,6 +46,11 @@ router.post('/users', (req: AuthenticatedRequest, res: Response) => {
 
   if (!name || !email || !password) {
     return res.status(400).json({ error: 'Name, email, and password are required.' });
+  }
+
+  const pwdValidation = AuthService.validatePasswordStrength(String(password));
+  if (!pwdValidation.isValid) {
+    return res.status(400).json({ error: pwdValidation.error });
   }
 
   const cleanEmail = String(email).trim().toLowerCase();
@@ -120,6 +127,10 @@ const handleUpdateUser = (req: AuthenticatedRequest, res: Response) => {
   }
 
   if (password && typeof password === 'string' && password.trim().length > 0) {
+    const pwdValidation = AuthService.validatePasswordStrength(password.trim());
+    if (!pwdValidation.isValid) {
+      return res.status(400).json({ error: pwdValidation.error });
+    }
     updates.password = AuthService.hashPassword(password.trim());
   }
 
@@ -231,7 +242,7 @@ router.delete('/users/:id', (req: AuthenticatedRequest, res: Response) => {
     return res.status(404).json({ error: 'User not found.' });
   }
 
-  res.json({ message: 'User and all associated data permanently deleted.' });
+  res.json({ message: 'User and all associated data permanently deleted from SQLite.' });
 });
 
 // 6. View all businesses
@@ -288,12 +299,13 @@ router.get('/settings', (req: AuthenticatedRequest, res: Response) => {
     allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
     default_webp_quality: parseInt(raw.default_webp_quality || '80', 10) || 80,
     auto_cleanup_interval_minutes: parseInt(raw.auto_cleanup_interval_minutes || '5', 10) || 5,
+    auth_session_lifetime_days: parseInt(raw.auth_session_lifetime_days || '2', 10) || 2,
   };
   res.json({ settings, raw });
 });
 
 router.put('/settings', (req: AuthenticatedRequest, res: Response) => {
-  const settingsPayload = (req.body && req.body.settings) ? req.body.settings : req.body;
+  const settingsPayload = req.body && req.body.settings ? req.body.settings : req.body;
 
   if (settingsPayload && typeof settingsPayload === 'object') {
     Object.entries(settingsPayload).forEach(([key, val]) => {
@@ -315,6 +327,7 @@ router.put('/settings', (req: AuthenticatedRequest, res: Response) => {
     allowed_formats: ['jpg', 'jpeg', 'png', 'webp'],
     default_webp_quality: parseInt(raw.default_webp_quality || '80', 10) || 80,
     auto_cleanup_interval_minutes: parseInt(raw.auto_cleanup_interval_minutes || '5', 10) || 5,
+    auth_session_lifetime_days: parseInt(raw.auth_session_lifetime_days || '2', 10) || 2,
   };
 
   db.logActivity({
@@ -325,7 +338,7 @@ router.put('/settings', (req: AuthenticatedRequest, res: Response) => {
   });
 
   res.json({
-    message: 'System settings updated successfully.',
+    message: 'System settings updated successfully in SQLite database.',
     settings,
     raw,
   });
@@ -345,36 +358,59 @@ router.post('/clean-all-data', (req: AuthenticatedRequest, res: Response) => {
   const adminEmail = req.user?.email || 'dularaavishka890@gmail.com';
   const result = db.wipeAllDataExceptAdmin(adminEmail);
   res.json({
-    message: 'All application data wiped and default settings restored.',
+    message: 'All application data wiped and default settings restored in SQLite.',
     result,
   });
 });
 
-// 11. Supabase Cloud Database Status & Configuration
-router.get('/supabase/status', async (req: AuthenticatedRequest, res: Response) => {
-  const { testSupabaseConnection, SUPABASE_PROJECT_NAME, SUPABASE_PROJECT_ID, SUPABASE_URL, SUPABASE_KEY, SUPABASE_SQL_SCHEMA, SUPABASE_RLS_FIX_SQL } = await import('../supabase');
-  const status = await testSupabaseConnection();
+// 11. SQLite Embedded Database Management Endpoints
+router.get('/sqlite/status', (req: AuthenticatedRequest, res: Response) => {
+  const metadata = db.getSqliteMetadata();
+  const integrity = db.integrityCheck();
   res.json({
-    status,
-    projectName: SUPABASE_PROJECT_NAME,
-    projectId: SUPABASE_PROJECT_ID,
-    url: SUPABASE_URL,
-    publishableKeyMasked: `${SUPABASE_KEY.slice(0, 10)}...${SUPABASE_KEY.slice(-6)}`,
-    sqlSchema: SUPABASE_SQL_SCHEMA,
-    rlsFixSql: SUPABASE_RLS_FIX_SQL,
+    status: {
+      connected: true,
+      engine: 'SQLite 3 Embedded Engine',
+      integrity: integrity.status,
+      integrityDetails: integrity.details,
+    },
+    metadata,
   });
 });
 
-// 12. Trigger manual sync to Supabase
-router.post('/supabase/sync', async (req: AuthenticatedRequest, res: Response) => {
-  const result = await db.syncToSupabase();
+router.post('/sqlite/integrity-check', (req: AuthenticatedRequest, res: Response) => {
+  const check = db.integrityCheck();
   res.json({
-    message: result.success ? 'Supabase cloud database synchronization completed successfully.' : 'Supabase sync completed with warning.',
+    message: check.status === 'ok' ? 'SQLite database integrity check passed.' : 'Integrity check reported issues.',
+    check,
+  });
+});
+
+router.post('/sqlite/vacuum', (req: AuthenticatedRequest, res: Response) => {
+  const result = db.vacuum();
+  res.json({
+    message: result.success ? 'SQLite database vacuumed and optimized successfully.' : 'Vacuum failed.',
     result,
   });
 });
 
-// 13. View activity logs
+router.post('/sqlite/backup', (req: AuthenticatedRequest, res: Response) => {
+  const result = db.createBackup();
+  res.json({
+    message: result.success ? `Snapshot backup created: ${result.filename}` : 'Backup failed.',
+    result,
+  });
+});
+
+router.get('/sqlite/download', (req: AuthenticatedRequest, res: Response) => {
+  if (fs.existsSync(DB_FILE_PATH)) {
+    res.download(DB_FILE_PATH, 'watermarkpro.sqlite');
+  } else {
+    res.status(404).json({ error: 'SQLite database file not found.' });
+  }
+});
+
+// 12. View activity logs
 router.get('/logs', (req: AuthenticatedRequest, res: Response) => {
   const logs = db.getActivityLogs(100);
   res.json({ logs });

@@ -3,12 +3,75 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>My Google AI Studio App</title>
-    <meta name="description" content="An application built with Google AI Studio." />
-    <meta property="og:title" content="My Google AI Studio App" />
-    <meta property="og:description" content="An application built with Google AI Studio." />
+    <title>WatermarkPro - Batch Watermark & WebP Studio</title>
+    <meta name="description" content="Production-ready batch image watermarking SaaS with multi-business branding, customizable watermarks, live preview, WebP conversion, ZIP download, and re-processing workflow." />
+    <meta property="og:title" content="WatermarkPro - Batch Watermark & WebP Studio" />
+    <meta property="og:description" content="Production-ready batch image watermarking SaaS with multi-business branding, customizable watermarks, live preview, WebP conversion, ZIP download, and re-processing workflow." />
     <meta property="og:type" content="website" />
     <meta name="twitter:card" content="summary_large_image" />
+    <script>
+      (function() {
+        try {
+          var _origFetch = (typeof window !== 'undefined' && window.fetch) ? window.fetch.bind(window) : null;
+          var _currentFetch = _origFetch;
+
+          function makeFetchSettable(target) {
+            if (!target || target === Object.prototype || (typeof EventTarget !== 'undefined' && target === EventTarget.prototype)) return;
+            try {
+              var desc = Object.getOwnPropertyDescriptor(target, 'fetch');
+              if (desc && desc.set) return;
+              Object.defineProperty(target, 'fetch', {
+                get: function() {
+                  return _currentFetch;
+                },
+                set: function(newFetch) {
+                  _currentFetch = newFetch;
+                },
+                configurable: true,
+                enumerable: desc ? desc.enumerable !== false : true
+              });
+            } catch (err) {}
+          }
+
+          // Explicitly clean up Object.prototype if it was ever polluted
+          try {
+            if (Object.prototype.hasOwnProperty('fetch')) {
+              delete Object.prototype.fetch;
+            }
+          } catch (e) {}
+
+          // Apply setter only to window and Window.prototype
+          if (typeof window !== 'undefined') {
+            makeFetchSettable(window);
+          }
+
+          if (typeof Window !== 'undefined' && Window.prototype) {
+            makeFetchSettable(Window.prototype);
+          }
+
+          // Global error suppression for any stray setter attempt
+          var prevOnError = window.onerror;
+          window.onerror = function(msg, source, lineno, colno, error) {
+            var fullMsg = (msg || '') + (error && error.message ? ' ' + error.message : '');
+            if (fullMsg.indexOf('Cannot set property fetch of') !== -1 || fullMsg.indexOf('which has only a getter') !== -1) {
+              return true;
+            }
+            if (typeof prevOnError === 'function') {
+              return prevOnError.apply(this, arguments);
+            }
+          };
+
+          window.addEventListener('error', function(event) {
+            var errMsg = (event && event.message) || (event && event.error && event.error.message) || '';
+            if (errMsg.indexOf('Cannot set property fetch of') !== -1 || errMsg.indexOf('which has only a getter') !== -1) {
+              if (event.preventDefault) event.preventDefault();
+              if (event.stopImmediatePropagation) event.stopImmediatePropagation();
+              return true;
+            }
+          }, true);
+        } catch (e) {}
+      })();
+    </script>
   </head>
   <body>
     <div id="root"></div>

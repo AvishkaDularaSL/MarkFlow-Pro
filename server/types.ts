@@ -59,6 +59,23 @@ export type WatermarkPosition =
 export type WatermarkBgMode = 'transparent' | 'white-card';
 
 export type OutputFormat = 'original' | 'png' | 'jpeg' | 'webp' | 'avif';
+export type CompressionMode = 'quality' | 'target_size';
+
+export interface ImageUpscaleConfig {
+  enabled: boolean;
+  mode: 'scale' | 'preset' | 'custom' | 'longest_edge';
+  scale?: number; // 2, 4, 8 etc.
+  preset?: string; // '1080p', '2k', '4k', 'instagram', 'ecommerce'
+  custom_width?: number;
+  custom_height?: number;
+  longest_edge?: number;
+  maintain_aspect_ratio?: boolean;
+  kernel?: 'lanczos3' | 'lanczos2' | 'cubic' | 'mitchell' | 'nearest';
+  sharpen?: boolean;
+  sharpen_amount?: number;
+  denoise?: boolean;
+  enhance_contrast?: boolean;
+}
 
 export interface WatermarkConfig {
   position: WatermarkPosition;
@@ -70,6 +87,10 @@ export interface WatermarkConfig {
   output_format?: OutputFormat; // 'original' | 'png' | 'jpeg' | 'webp' | 'avif'
   quality?: number; // 1 to 100, default 80
   webp_quality?: number; // legacy alias
+  compression_mode?: CompressionMode; // 'quality' | 'target_size'
+  target_file_size_kb?: number; // in KB, e.g. 250 (250 KB)
+  watermark_enabled?: boolean;
+  upscale?: ImageUpscaleConfig;
 }
 
 export interface ProcessingJob {
@@ -133,7 +154,7 @@ export interface ActivityLog {
 }
 
 export interface DatabaseConfig {
-  type: 'supabase' | 'postgresql' | 'cpanel_mysql' | 'mariadb' | 'internal_json';
+  type: 'sqlite' | 'internal_json' | 'postgresql' | 'cpanel_mysql' | 'mariadb';
   host: string;
   port: number;
   database: string;
@@ -144,7 +165,6 @@ export interface DatabaseConfig {
   pool_size: number;
   status: 'connected' | 'idle' | 'error';
   last_tested?: string;
-  supabase_project_id?: string;
-  supabase_url?: string;
+  sqlite_file_path?: string;
   cpanel_instructions?: string;
 }

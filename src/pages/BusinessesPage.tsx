@@ -125,23 +125,11 @@ export const BusinessesPage: React.FC<BusinessesPageProps> = ({
 
     try {
       if (editingBiz) {
-        const res = await api.put<{ message?: string; supabaseSaved?: boolean; supabaseRlsBlocked?: boolean }>(`/api/businesses/${editingBiz.id}`, formData);
-        if (res.supabaseSaved) {
-          success('Business Updated', `${formName} saved to Supabase cloud database.`);
-        } else if (res.supabaseRlsBlocked) {
-          warning('Active Session Saved', `${formName} updated. Note: Supabase RLS is blocking direct cloud writes. Run the SQL script in Supabase SQL editor to sync permanently.`);
-        } else {
-          success('Business Updated', `${formName} profile has been saved.`);
-        }
+        await api.put<{ message?: string }>(`/api/businesses/${editingBiz.id}`, formData);
+        success('Business Updated', `${formName} saved to SQLite embedded database.`);
       } else {
-        const res = await api.post<{ message?: string; supabaseSaved?: boolean; supabaseRlsBlocked?: boolean }>(`/api/businesses`, formData);
-        if (res.supabaseSaved) {
-          success('Business Registered', `${formName} saved to Supabase cloud database.`);
-        } else if (res.supabaseRlsBlocked) {
-          warning('Active Session Saved', `${formName} registered. Note: Supabase RLS is blocking direct cloud writes. Run the SQL script in Supabase SQL editor to sync permanently.`);
-        } else {
-          success('Business Created', `${formName} has been registered.`);
-        }
+        await api.post<{ message?: string }>(`/api/businesses`, formData);
+        success('Business Created', `${formName} registered and saved to SQLite embedded database.`);
       }
       setIsAddModalOpen(false);
       await fetchBusinesses();

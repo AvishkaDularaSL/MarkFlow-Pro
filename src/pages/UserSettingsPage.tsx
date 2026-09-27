@@ -41,8 +41,12 @@ export const UserSettingsPage: React.FC = () => {
       return;
     }
 
-    if (newPassword.length < 6) {
-      error('Weak Password', 'New password must be at least 6 characters.');
+    if (newPassword.length < 8) {
+      error('Weak Password', 'New password must be at least 8 characters with letters and numbers.');
+      return;
+    }
+    if (!/[a-zA-Z]/.test(newPassword) || !/[0-9]/.test(newPassword)) {
+      error('Weak Password', 'New password must contain both letters and numbers for enhanced security.');
       return;
     }
 

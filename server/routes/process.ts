@@ -48,11 +48,12 @@ router.get('/session', AuthService.requireAuth, (req: AuthenticatedRequest, res:
   const lifetime = parseInt(db.getSettingValue('TEMP_FILE_LIFETIME', '3600'), 10);
 
   // Check if there is an active session
-  let sessions = db['data'].processing_sessions.filter(
-    (s) => s.user_id === userId && new Date(s.expires_at).getTime() > Date.now()
+  const userSessions = db.getProcessingSessionsByUserId(userId);
+  const activeSessions = userSessions.filter(
+    (s) => new Date(s.expires_at).getTime() > Date.now()
   );
 
-  let activeSession = sessions.length > 0 ? sessions[sessions.length - 1] : null;
+  let activeSession = activeSessions.length > 0 ? activeSessions[0] : null;
 
   if (!activeSession) {
     activeSession = db.createProcessingSession(userId, lifetime);

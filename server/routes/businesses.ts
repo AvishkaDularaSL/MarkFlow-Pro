@@ -1,6 +1,5 @@
 import { Router, Response } from 'express';
 import multer from 'multer';
-import path from 'path';
 import fs from 'fs';
 import { db } from '../db';
 import { AuthService, AuthenticatedRequest } from '../services/AuthService';
@@ -87,17 +86,10 @@ router.post(
       logo_mime: req.file.mimetype,
     });
 
-    // Await cloud sync to report accurate persistence status
-    const syncRes = await db.syncBusinessToSupabase(business);
-
     res.status(201).json({
-      message: syncRes.success
-        ? 'Business successfully registered and saved to Supabase cloud database.'
-        : 'Business registered in active session.',
+      message: 'Business successfully registered and saved to SQLite embedded database.',
       business,
-      supabaseSaved: syncRes.success,
-      supabaseError: syncRes.error,
-      supabaseRlsBlocked: syncRes.rlsBlocked,
+      database: 'SQLite 3 Embedded Local Database',
     });
   }
 );
@@ -136,7 +128,6 @@ router.put(
     };
 
     if (req.file) {
-      // Remove old logo file if exists
       if (existing.logo_path && fs.existsSync(existing.logo_path)) {
         StorageService.safeUnlink(existing.logo_path);
       }
@@ -150,16 +141,10 @@ router.put(
       return res.status(404).json({ error: 'Business not found.' });
     }
 
-    const syncRes = await db.syncBusinessToSupabase(updated);
-
     res.json({
-      message: syncRes.success
-        ? 'Business profile updated and saved to Supabase.'
-        : 'Business profile updated in active session.',
+      message: 'Business profile updated and saved to SQLite embedded database.',
       business: updated,
-      supabaseSaved: syncRes.success,
-      supabaseError: syncRes.error,
-      supabaseRlsBlocked: syncRes.rlsBlocked,
+      database: 'SQLite 3 Embedded Local Database',
     });
   }
 );

@@ -26,7 +26,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isOpen,
   onClose,
 }) => {
-  const { user, logout } = useAuth();
+  const { user, logout, sessionRemainingHours } = useAuth();
   const isAdmin = user?.role === 'admin';
 
   const userNavItems = [
@@ -151,6 +151,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
                   <span className="text-[10px] text-slate-400">
                     {user.role === 'admin' ? 'System Administrator' : 'Pro User Plan'}
                   </span>
+                  {sessionRemainingHours !== null && (
+                    <span className="text-[9px] text-emerald-400 font-medium">
+                      {sessionRemainingHours}h session left
+                    </span>
+                  )}
                 </div>
               </div>
 

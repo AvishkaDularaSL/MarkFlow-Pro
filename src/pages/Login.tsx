@@ -26,7 +26,7 @@ export const Login: React.FC<LoginProps> = ({ onNavigate }) => {
     setIsLoading(true);
     try {
       const trimmedEmail = email.trim().toLowerCase();
-      const res = await api.post<{ token?: string; user?: any; data?: any }>('/api/auth/login', {
+      const res = await api.post<{ token?: string; user?: any; data?: any; expiresAt?: string }>('/api/auth/login', {
         email: trimmedEmail,
         password,
       });
@@ -38,8 +38,8 @@ export const Login: React.FC<LoginProps> = ({ onNavigate }) => {
         throw new Error('Invalid sign-in response received. Please check credentials and try again.');
       }
 
-      login(token, user);
-      success('Welcome back!', `Signed in as ${user.name || user.email || 'User'}`);
+      login(token, user, res?.expiresAt);
+      success('Welcome back!', `Signed in as ${user.name || user.email || 'User'} (2-Day Session Active)`);
       if (user.role === 'admin') {
         onNavigate('admin-dashboard');
       } else {
